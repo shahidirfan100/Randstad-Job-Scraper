@@ -4,10 +4,12 @@ import {
     CheerioCrawler,
     Dataset,
     RequestQueue,
+    Session,
     sleep,
 } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
 import { HeaderGenerator } from 'header-generator';
+import { JSDOM } from 'jsdom';
 
 const BASE_URL = 'https://www.randstad.com';
 const JOBS_PATH = '/jobs/';
@@ -26,10 +28,10 @@ const randomBetween = (min, max) => Math.floor(Math.random() * (max - min + 1)) 
 
 const waitHumanLike = async (type = 'short') => {
     const ranges = {
-        micro: [60, 180],
-        short: [320, 1100],
-        medium: [900, 2000],
-        long: [1800, 3500],
+        micro: [40, 120],
+        short: [250, 850],
+        medium: [650, 1600],
+        long: [1400, 2800],
     };
     const [min, max] = ranges[type] || ranges.short;
     await sleep(randomBetween(min, max));
@@ -176,7 +178,7 @@ const extractSalary = (source = {}) => {
         maximum: salary.SalaryMax || jobData.MaximumSalary || null,
         currency: salary.CurrencyId || jobData.Currency || null,
         interval: salary.CompensationType || jobData.CompensationType || null,
-        text: jobData.CompensationText || null,
+        text: jobData.CompensationText || salary.CompensationText || null,
     };
 };
 
@@ -287,7 +289,7 @@ await Actor.main(async () => {
         cookiesJson,
         proxyConfiguration,
         dedupe = true,
-        maxConcurrency = 3,
+        maxConcurrency = 5,
     } = input;
 
     const resultsWanted = Number.isFinite(+resultsWantedRaw) ? Math.max(1, +resultsWantedRaw) : Number.MAX_SAFE_INTEGER;
@@ -362,42 +364,44 @@ await Actor.main(async () => {
         requestQueue,
         proxyConfiguration: proxy,
         maxConcurrency,
-        minConcurrency: 1,
-        maxRequestRetries: 2,
-        maxRequestsPerMinute: 60,
+        minConcurrency: 2,
+        maxRequestRetries: 3,
+        maxRequestsPerMinute: 80,
         additionalMimeTypes: ['application/json'],
         useSessionPool: true,
         sessionPoolOptions: {
             maxPoolSize: 40,
             sessionOptions: {
-                maxUsageCount: 4,
+                maxUsageCount: 5,
+            },
+            createSessionFunction: async (_pool, sessionOptions) => {
+                const sanitized = { ...sessionOptions };
+                delete sanitized.maxSessionAgeSecs;
+                return new Session(sanitized);
             },
         },
-        preNavigationHooks: [
-            async ({ request, session }, requestOptions) => {
-                if (!session.userData.headers) {
-                    session.userData.headers = headerGenerator.getHeaders({
-                        httpVersion: '2',
-                    });
-                    if (inputCookies.length) {
-                        session.setCookies(inputCookies, BASE_URL);
-                    }
+        useCookies: true,
+        prepareRequestFunction: async ({ request, session }) => {
+            if (!session.userData.headers) {
+                session.userData.headers = headerGenerator.getHeaders({ httpVersion: '2' });
+                if (inputCookies.length) {
+                    session.setCookies(inputCookies, BASE_URL);
                 }
-                const headers = { ...session.userData.headers };
-                headers.Referer = request.userData.referer || `${BASE_URL}/`;
-                headers['sec-ch-ua-platform'] = headers['sec-ch-ua-platform'] || '"Windows"';
-                headers['accept-language'] = headers['accept-language'] || 'en-US,en;q=0.9';
-                requestOptions.headers = {
-                    ...headers,
-                    ...(requestOptions.headers || {}),
-                };
-                requestOptions.timeout = {
-                    request: randomBetween(20000, 32000),
-                };
-                requestOptions.retry = { limit: 1 };
-                await waitHumanLike('micro');
-            },
-        ],
+            }
+            const headers = {
+                ...session.userData.headers,
+                Referer: request.userData.referer || `${BASE_URL}/`,
+                'sec-ch-ua-platform': '"Windows"',
+                'accept-language': 'en-US,en;q=0.9',
+            };
+            request.headers = {
+                ...headers,
+                ...(request.headers || {}),
+            };
+            request.timeoutSecs = randomBetween(20, 32);
+            request.retryCount = 0;
+            await waitHumanLike('micro');
+        },
         postNavigationHooks: [
             async () => {
                 await waitHumanLike('short');
@@ -436,8 +440,8 @@ await Actor.main(async () => {
                         country: locationInfo.country,
                         postalCode: locationInfo.postalCode,
                         jobType: normalizeWhitespace(source.JobInformation?.JobType || source.BlueXJobData?.JobType),
-                        postedAt: source.JobDates?.DateCreated || source.JobDates?.DateCreatedTime || null,
                         jobCategory: normalizeWhitespace(source.BlueXSanitized?.Specialism || source.BlueXJobData?.Specialism),
+                        postedAt: source.JobDates?.DateCreated || source.JobDates?.DateCreatedTime || null,
                         salary,
                         snippet: htmlToText(source.JobInformation?.Description || source.BlueXJobData?.Description),
                         sourceRaw: hit,
@@ -466,6 +470,7 @@ await Actor.main(async () => {
                             country: null,
                             postalCode: null,
                             jobType: null,
+                            jobCategory: null,
                             postedAt: job.postedAt,
                             salary: {
                                 minimum: null,
@@ -482,6 +487,10 @@ await Actor.main(async () => {
                             state.seenJobs.add(job.jobUrl);
                         }
                     }
+                }
+
+                if (!previews.length) {
+                    crawlerLog.warning(`No jobs detected on ${request.url}`);
                 }
 
                 if (!collectDetails) {
@@ -588,7 +597,8 @@ await Actor.main(async () => {
                 }
                 if (!jobData && backoffAttempt >= 3) {
                     state.pendingDetail.delete(jobUrl);
-                    throw new Error('Unable to load jobData after retries.');
+                    crawlerLog.error(`Unable to load jobData after retries for ${jobUrl}`);
+                    return;
                 }
 
                 const jsonLd = extractJsonLd($);
