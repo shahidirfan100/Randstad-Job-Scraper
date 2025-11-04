@@ -4,7 +4,6 @@ import {
     CheerioCrawler,
     Dataset,
     RequestQueue,
-    Session,
     sleep,
 } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
@@ -374,33 +373,33 @@ await Actor.main(async () => {
             sessionOptions: {
                 maxUsageCount: 5,
             },
-            createSessionFunction: async (_pool, sessionOptions) => {
-                const sanitized = { ...sessionOptions };
-                delete sanitized.maxSessionAgeSecs;
-                return new Session(sanitized);
-            },
         },
-        prepareRequestFunction: async ({ request, session }) => {
-            if (!session.userData.headers) {
-                session.userData.headers = headerGenerator.getHeaders({ httpVersion: '2' });
-                if (inputCookies.length) {
-                    session.setCookies(inputCookies, BASE_URL);
+        preNavigationHooks: [
+            async ({ request, session }, requestOptions) => {
+                if (session && !session.userData.headers) {
+                    session.userData.headers = headerGenerator.getHeaders({ httpVersion: '2' });
                 }
-            }
-            const headers = {
-                ...session.userData.headers,
-                Referer: request.userData.referer || `${BASE_URL}/`,
-                'sec-ch-ua-platform': '"Windows"',
-                'accept-language': 'en-US,en;q=0.9',
-            };
-            request.headers = {
-                ...headers,
-                ...(request.headers || {}),
-            };
-            request.timeoutSecs = randomBetween(20, 32);
-            request.retryCount = 0;
-            await waitHumanLike('micro');
-        },
+                const baseHeaders = session?.userData.headers || headerGenerator.getHeaders({ httpVersion: '2' });
+                const headers = {
+                    ...baseHeaders,
+                    Referer: request.userData.referer || `${BASE_URL}/`,
+                    'sec-ch-ua-platform': '"Windows"',
+                    'accept-language': 'en-US,en;q=0.9',
+                };
+                requestOptions.headers = {
+                    ...headers,
+                    ...(requestOptions.headers || {}),
+                };
+                requestOptions.timeout = {
+                    request: randomBetween(20000, 32000),
+                };
+                if (session && inputCookies.length && !session.userData.cookiesApplied) {
+                    session.setCookies(inputCookies, BASE_URL);
+                    session.userData.cookiesApplied = true;
+                }
+                await waitHumanLike('micro');
+            },
+        ],
         postNavigationHooks: [
             async () => {
                 await waitHumanLike('short');
