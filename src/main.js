@@ -173,7 +173,8 @@ const extractJsonLd = ($) => {
     return { jobPosting: jobPosting || null, all: payloads };
 };
 
-const deriveLocationFromJobPosting = (jobPosting = {}) => {
+const deriveLocationFromJobPosting = (jobPostingInput) => {
+    const jobPosting = jobPostingInput || {};
     if (!jobPosting) return {};
     const locationNode = Array.isArray(jobPosting.jobLocation)
         ? jobPosting.jobLocation[0]
@@ -193,7 +194,8 @@ const deriveLocationFromJobPosting = (jobPosting = {}) => {
     };
 };
 
-const extractSalaryFromJobPosting = (jobPosting = {}) => {
+const extractSalaryFromJobPosting = (jobPostingInput) => {
+    const jobPosting = jobPostingInput || {};
     const baseSalary = jobPosting?.baseSalary || {};
     const value = baseSalary?.value || {};
     const toNumber = (num) => {
@@ -530,6 +532,7 @@ await Actor.main(async () => {
                         postedAt: source.JobDates?.DateCreated || source.JobDates?.DateCreatedTime || null,
                         salary,
                         snippet: htmlToText(source.JobInformation?.Description || source.BlueXJobData?.Description),
+                        snippetHtml: source.JobInformation?.Description || source.BlueXJobData?.Description || null,
                         sourceRaw: hit,
                     });
                     if (dedupe) {
@@ -691,26 +694,25 @@ await Actor.main(async () => {
                 const jobPosting = jsonLd.jobPosting || null;
                 const domFallback = parseDomFallbackDetail($.html());
 
-                if (!jobData && !jobPosting) {
-                    if (backoffAttempt < 3) {
-                        const delay = (2 ** backoffAttempt) * 1000 + randomBetween(250, 900);
-                        crawlerLog.warning(`Missing jobData/jsonLd for ${jobUrl}. Retrying after ${delay}ms.`);
-                        await sleep(delay);
-                        state.pendingDetail.delete(jobUrl);
-                        await requestQueue.addRequest({
-                            url: jobUrl,
-                            uniqueKey: `${jobUrl}#${Date.now()}`,
-                            userData: {
-                                ...request.userData,
-                                backoffAttempt: backoffAttempt + 1,
-                            },
-                        });
-                        session?.markBad?.();
-                        return;
-                    }
+                const hasStructuredData = Boolean(jobData || jobPosting);
+                if (!hasStructuredData && backoffAttempt < 3) {
+                    const delay = (2 ** backoffAttempt) * 1000 + randomBetween(250, 900);
+                    crawlerLog.warning(`Missing jobData/jsonLd for ${jobUrl}. Retrying after ${delay}ms.`);
+                    await sleep(delay);
                     state.pendingDetail.delete(jobUrl);
-                    crawlerLog.error(`Unable to extract job detail data for ${jobUrl}`);
+                    await requestQueue.addRequest({
+                        url: jobUrl,
+                        uniqueKey: `${jobUrl}#${Date.now()}`,
+                        userData: {
+                            ...request.userData,
+                            backoffAttempt: backoffAttempt + 1,
+                        },
+                    });
+                    session?.markBad?.();
                     return;
+                }
+                if (!hasStructuredData) {
+                    crawlerLog.warning(`Falling back to preview-only data for ${jobUrl}`);
                 }
 
                 const locationFromJobData = deriveLocation(jobData) || {};
@@ -743,6 +745,7 @@ await Actor.main(async () => {
                 const descriptionHtml = jobData?.JobInformation?.Description
                     || jobPosting?.description
                     || domFallback.descriptionHtml
+                    || preview?.snippetHtml
                     || null;
 
                 const identifierFromJsonLd = (() => {
