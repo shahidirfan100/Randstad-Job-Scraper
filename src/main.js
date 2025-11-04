@@ -1,6 +1,12 @@
 // Randstad Job Scraper - CheerioCrawler implementation with stealth best practices
 import { Actor, log } from 'apify';
-import { CheerioCrawler, Dataset, RequestQueue, sleep } from 'crawlee';
+import {
+    CheerioCrawler,
+    Dataset,
+    RequestQueue,
+    Session,
+    sleep,
+} from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
 import { HeaderGenerator } from 'header-generator';
 import { JSDOM } from 'jsdom';
@@ -367,6 +373,11 @@ await Actor.main(async () => {
             maxPoolSize: 40,
             sessionOptions: {
                 maxUsageCount: 4,
+            },
+            createSessionFunction: async (_pool, sessionOptions) => {
+                const sanitized = { ...sessionOptions };
+                delete sanitized.maxSessionAgeSecs;
+                return new Session(sanitized);
             },
         },
         preNavigationHooks: [
