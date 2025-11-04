@@ -1,6 +1,6 @@
 // Randstad Job Scraper - CheerioCrawler implementation with stealth best practices
-import { Actor, log, sleep } from 'apify';
-import { CheerioCrawler, Dataset, RequestQueue } from 'crawlee';
+import { Actor, log } from 'apify';
+import { CheerioCrawler, Dataset, RequestQueue, sleep } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
 import { HeaderGenerator } from 'header-generator';
 import { JSDOM } from 'jsdom';
