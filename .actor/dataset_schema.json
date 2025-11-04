@@ -1,5 +1,4 @@
 {
-  "actorSpecification": 1,
   "fields": {},
   "views": {
     "overview": {
@@ -9,10 +8,14 @@
           "title",
           "company",
           "location",
+          "city",
+          "region",
+          "country",
           "salary",
           "job_type",
+          "job_category",
           "date_posted",
-          "url"
+          "job_url"
         ]
       },
       "display": {
@@ -42,7 +45,7 @@
             "label": "Posted",
             "format": "text"
           },
-          "url": {
+          "job_url": {
             "label": "URL",
             "format": "link"
           }

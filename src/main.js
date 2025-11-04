@@ -785,6 +785,20 @@ await Actor.main(async () => {
                     return;
                 }
 
+                // Check if job is no longer available
+                const notAvailableText = $('body').text().toLowerCase();
+                const isNotAvailable = notAvailableText.includes('no longer available') 
+                    || notAvailableText.includes('not available') 
+                    || notAvailableText.includes('position has been filled')
+                    || notAvailableText.includes('job posting has expired')
+                    || $('[class*="not-available"], [class*="expired"], [class*="filled"]').length > 0;
+                
+                if (isNotAvailable) {
+                    crawlerLog.warning(`Job no longer available: ${jobUrl}`);
+                    state.pendingDetail.delete(jobUrl);
+                    return;
+                }
+
                 const routeData = extractRouteData($, body?.toString?.());
                 const jobData = routeData?.jobData?.hits?.hits?.[0]?._source || null;
 
@@ -882,52 +896,18 @@ await Actor.main(async () => {
                 const record = {
                     title: softNormalize(domFallback.title, jobData?.JobInformation?.Title || preview?.title) || 'Untitled',
                     company: softNormalize(domFallback.company, jobData?.JobIdentity?.CompanyName || preview?.company || jsonLd.jobPosting?.hiringOrganization?.name || 'Randstad'),
-                    job_url: jobUrl,
-                    job_id: softNormalize(jobData?.JobId, preview?.jobId || identifierFromJsonLd || jobId),
-                    reference_number: softNormalize(jobData?.BlueXJobData?.ReferenceNumber, identifierFromJsonLd),
                     location: softNormalize(locationInfo.location, preview?.location),
                     city: softNormalize(locationInfo.city, null),
                     region: softNormalize(locationInfo.region, null),
                     country: softNormalize(locationInfo.country, null),
                     postal_code: softNormalize(locationInfo.postalCode, null),
                     job_type: softNormalize(employmentType, jobData?.JobInformation?.JobType),
-                    employment_type: softNormalize(employmentType, jobData?.JobInformation?.JobType),
                     job_category: softNormalize(jobData?.BlueXSanitized?.Specialism, preview?.jobCategory || jobPosting?.industry),
                     date_posted: postedDate,
-                    valid_through: softNormalize(jobPosting?.validThrough, jobData?.JobDates?.ExpirationDate),
-                    salary_min: combinedSalary.minimum,
-                    salary_max: combinedSalary.maximum,
-                    salary_currency: combinedSalary.currency,
-                    salary_interval: combinedSalary.interval,
                     salary: formatSalaryString(combinedSalary, preview?.salary?.text),
-                    salary_text: combinedSalary.text || preview?.salary?.text || null,
                     description_html: descriptionHtml,
                     description_text: htmlToText(descriptionHtml),
-                    requirements: htmlToText(jobData?.JobInformation?.Requirements || jsonLd.jobPosting?.qualifications || jsonLd.jobPosting?.responsibilities),
-                    benefits: htmlToText(jobData?.JobInformation?.Benefits || jsonLd.jobPosting?.jobBenefits),
-                    tags: Array.from(new Set([
-                        jobData?.BlueXSanitized?.Specialism,
-                        jobData?.BlueXSanitized?.SubSpecialism,
-                        jsonLd.jobPosting?.occupationalCategory,
-                    ].filter(Boolean))),
-                    seniority: jobData?.JobInformation?.Seniority || null,
-                    work_hours: jobData?.JobInformation?.Hours || jsonLd.jobPosting?.workHours || null,
-                    remote_type: jsonLd.jobPosting?.jobLocationType || null,
-                    seo_title: softNormalize(jsonLd.jobPosting?.title, null),
-                    breadcrumbs: jsonLd.all
-                        .flatMap((item) => (item['@type'] === 'BreadcrumbList' ? item.itemListElement || [] : []))
-                        .map((crumb) => ({
-                            position: crumb.position,
-                            name: crumb.name,
-                            item: crumb.item,
-                        })),
-                    api_source: jobData,
-                    json_ld: jsonLd.jobPosting || null,
-                    scraped_at: new Date().toISOString(),
-                    data_source: hasStructuredData ? 'detail' : 'preview_fallback',
-                    extraction_notes: hasStructuredData 
-                        ? 'Combined __ROUTE_DATA__.jobData payload, JSON-LD, and DOM fallbacks.' 
-                        : 'Fallback to preview data due to missing structured data',
+                    job_url: jobUrl,
                 };
 
                 const sanitized = sanitizeForDataset(record);
