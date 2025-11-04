@@ -448,6 +448,8 @@ await Actor.main(async () => {
         : undefined;
 
     const requestQueue = await RequestQueue.open();
+    // Track the first effective URL we add to the queue so we can log it later
+    let firstUrlToUse = null;
     for (const initialUrl of initialUrls) {
         const baseOrigin = getBaseFromUrl(initialUrl);
         const jobsPath = getJobsPath(initialUrl);
@@ -470,6 +472,7 @@ await Actor.main(async () => {
                 jobsPath,
             },
         });
+        if (!firstUrlToUse) firstUrlToUse = urlToUse;
     }
 
     const state = {
@@ -943,7 +946,7 @@ await Actor.main(async () => {
     log.info('Randstad Job Scraper started.');
     log.info(`Configuration: keyword="${keyword}", location="${location}", posted_date="${postedDate}"`);
     log.info(`Limits: results_wanted=${resultsWanted}, max_pages=${maxPages}, collectDetails=${collectDetails}`);
-    log.info(`Starting URL: ${urlToUse}`);
+    log.info(`Starting URL: ${firstUrlToUse || initialUrls[0]}`);
     
     await crawler.run();
     
