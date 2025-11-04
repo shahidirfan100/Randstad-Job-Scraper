@@ -269,13 +269,13 @@ const parseDomFallbackList = ($, baseUrl) => {
 };
 
 const parseDomFallbackDetail = (html) => {
-    const dom = new JSDOM(html);
-    const { document } = dom.window;
-    const descriptionEl = document.querySelector('.meta-content__description, .block__description, .content-block__description, [data-testid="job-description"]');
+    if (!html) return { title: null, descriptionHtml: null, postedAt: null };
+    const $ = cheerioLoad(html);
+    const descriptionEl = $('.meta-content__description, .block__description, .content-block__description, [data-testid="job-description"]').first();
     return {
-        title: document.querySelector('h1')?.textContent || null,
-        descriptionHtml: descriptionEl?.innerHTML || null,
-        postedAt: document.querySelector('[data-testid="job-posted-date"], time[datetime]')?.getAttribute('datetime') || null,
+        title: $('h1').first().text().trim() || null,
+        descriptionHtml: descriptionEl.html() || null,
+        postedAt: $('[data-testid="job-posted-date"]').attr('datetime') || $('time[datetime]').attr('datetime') || null,
     };
 };
 
@@ -498,6 +498,11 @@ await Actor.main(async () => {
 
                 const routeData = extractRouteData($, body?.toString?.());
                 const hits = routeData?.searchResults?.hits?.hits || [];
+                
+                if (!hits.length) {
+                    crawlerLog.warning(`No hits found in __ROUTE_DATA__ for page ${pageNo}, trying DOM fallback`);
+                }
+                
                 const previews = [];
 
                 for (const hit of hits) {
@@ -540,9 +545,13 @@ await Actor.main(async () => {
                         state.seenJobs.add(jobUrl);
                     }
                 }
+                
+                crawlerLog.info(`Extracted ${previews.length} jobs from page ${pageNo} (via ${hits.length ? '__ROUTE_DATA__' : 'DOM fallback'})`);
 
                 if (!previews.length) {
+                    crawlerLog.warning(`No jobs extracted from __ROUTE_DATA__, attempting DOM fallback for page ${pageNo}`);
                     const fallback = parseDomFallbackList($, request.url);
+                    crawlerLog.info(`DOM fallback found ${fallback.length} jobs on page ${pageNo}`);
                     for (const job of fallback) {
                         if (dedupe && state.seenJobs.has(job.jobUrl)) continue;
                         const idMatch = job.jobUrl.match(/_(\d+)(?:\/|$)/);
@@ -695,24 +704,27 @@ await Actor.main(async () => {
                 const domFallback = parseDomFallbackDetail($.html());
 
                 const hasStructuredData = Boolean(jobData || jobPosting);
-                if (!hasStructuredData && backoffAttempt < 3) {
+                if (!hasStructuredData && backoffAttempt < 2) {
                     const delay = (2 ** backoffAttempt) * 1000 + randomBetween(250, 900);
-                    crawlerLog.warning(`Missing jobData/jsonLd for ${jobUrl}. Retrying after ${delay}ms.`);
+                    crawlerLog.warning(`Missing jobData/jsonLd for ${jobUrl}. Retrying (${backoffAttempt + 1}/2) after ${delay}ms.`);
                     await sleep(delay);
                     state.pendingDetail.delete(jobUrl);
                     await requestQueue.addRequest({
                         url: jobUrl,
-                        uniqueKey: `${jobUrl}#${Date.now()}`,
+                        uniqueKey: `${jobUrl}#retry${backoffAttempt + 1}`,
                         userData: {
                             ...request.userData,
                             backoffAttempt: backoffAttempt + 1,
                         },
                     });
-                    session?.markBad?.();
+                    if (session?.markBad) session.markBad();
                     return;
                 }
-                if (!hasStructuredData) {
-                    crawlerLog.warning(`Falling back to preview-only data for ${jobUrl}`);
+                
+                if (!hasStructuredData && !preview) {
+                    crawlerLog.error(`Unable to extract job detail data for ${jobUrl} - no structured data or preview available`);
+                    state.pendingDetail.delete(jobUrl);
+                    return;
                 }
 
                 const locationFromJobData = deriveLocation(jobData) || {};
@@ -764,7 +776,7 @@ await Actor.main(async () => {
                 );
 
                 const record = {
-                    title: softNormalize(jobData?.JobInformation?.Title, domFallback.title || preview?.title),
+                    title: softNormalize(jobData?.JobInformation?.Title, domFallback.title || preview?.title) || 'Untitled',
                     company: softNormalize(jobData?.JobIdentity?.CompanyName, preview?.company || jsonLd.jobPosting?.hiringOrganization?.name || 'Randstad'),
                     job_url: jobUrl,
                     job_id: softNormalize(jobData?.JobId, preview?.jobId || identifierFromJsonLd || jobId),
@@ -808,14 +820,24 @@ await Actor.main(async () => {
                     api_source: jobData,
                     json_ld: jsonLd.jobPosting || null,
                     scraped_at: new Date().toISOString(),
-                    data_source: 'detail',
-                    extraction_notes: 'Combined __ROUTE_DATA__.jobData payload, JSON-LD, and DOM fallbacks.',
+                    data_source: hasStructuredData ? 'detail' : 'preview_fallback',
+                    extraction_notes: hasStructuredData 
+                        ? 'Combined __ROUTE_DATA__.jobData payload, JSON-LD, and DOM fallbacks.' 
+                        : 'Fallback to preview data due to missing structured data',
                 };
 
-                await dataset.pushData(sanitizeForDataset(record));
+                const sanitized = sanitizeForDataset(record);
+                
+                if (!sanitized.title || !sanitized.job_url) {
+                    crawlerLog.error(`Skipping record - missing required fields (title: ${sanitized.title}, url: ${sanitized.job_url})`);
+                    state.pendingDetail.delete(jobUrl);
+                    return;
+                }
+
+                await dataset.pushData(sanitized);
                 state.saved += 1;
                 state.pendingDetail.delete(jobUrl);
-                crawlerLog.info(`Stored detail: ${record.title || record.job_url}. Total ${state.saved}`);
+                crawlerLog.info(`✓ Stored detail: ${sanitized.title} - Total ${state.saved}/${resultsWanted}`);
                 await waitHumanLike('medium');
                 return;
             }
@@ -826,7 +848,16 @@ await Actor.main(async () => {
         },
     });
 
-    log.info('Randstad Job Scraper (Cheerio) started.');
+    log.info('Randstad Job Scraper started.');
+    log.info(`Configuration: keyword="${keyword}", location="${location}", posted_date="${postedDate}"`);
+    log.info(`Limits: results_wanted=${resultsWanted}, max_pages=${maxPages}, collectDetails=${collectDetails}`);
+    log.info(`Starting URL: ${urlToUse}`);
+    
     await crawler.run();
-    log.info(`Run finished. Stored ${state.saved} records.`);
+    
+    log.info(`✓ Run completed successfully. Stored ${state.saved} job records.`);
+    
+    if (state.saved < resultsWanted) {
+        log.warning(`Note: Only collected ${state.saved} jobs out of ${resultsWanted} requested.`);
+    }
 });
