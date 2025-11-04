@@ -252,17 +252,27 @@ const extractSalary = (source = {}) => {
 
 const parseDomFallbackList = ($, baseUrl) => {
     const jobs = [];
-    $('[data-testid="job-card"], .cards__item').each((_, el) => {
+    $('[data-testid="job-card"], .cards__item, .job-card, article[class*="job"]').each((_, el) => {
         const element = $(el);
-        const anchor = element.find('a[href*="/jobs/"]').first();
+        
+        // Try multiple selectors for the job link
+        const anchor = element.find('a[href*="/jobs/"]').first()
+            || element.find('a[href*="/job/"]').first()
+            || element.find('a[data-testid*="job"]').first()
+            || element.find('a').first();
+        
         const href = anchor.attr('href');
         if (!href) return;
+        
+        // Only accept URLs that look like job detail pages
+        if (!href.includes('/jobs/') && !href.includes('/job/')) return;
+        
         const jobUrl = href.startsWith('http') ? href : new URL(href, baseUrl).href;
-        const title = normalizeWhitespace(anchor.text()) || normalizeWhitespace(element.find('h1, h2, h3').first().text());
-        const company = normalizeWhitespace(element.find('[data-testid="job-company"], .cards__logo-title-container').first().text()) || 'Randstad';
-        const location = normalizeWhitespace(element.find('[data-testid="job-location"], .cards__meta-item, [data-testid="job-card-location"]').first().text());
-        const postedAt = normalizeWhitespace(element.find('time').attr('datetime') || element.find('.cards__time-info').text());
-        const salaryText = normalizeWhitespace(element.find('[data-testid="renumeration indication of role"], [data-testid="job-salary"]').text());
+        const title = normalizeWhitespace(anchor.text()) || normalizeWhitespace(element.find('h1, h2, h3, [data-testid*="title"]').first().text());
+        const company = normalizeWhitespace(element.find('[data-testid="job-company"], .cards__logo-title-container, [class*="company"]').first().text()) || 'Randstad';
+        const location = normalizeWhitespace(element.find('[data-testid="job-location"], .cards__meta-item, [data-testid="job-card-location"], [class*="location"]').first().text());
+        const postedAt = normalizeWhitespace(element.find('time').attr('datetime') || element.find('.cards__time-info, [class*="date"]').text());
+        const salaryText = normalizeWhitespace(element.find('[data-testid="renumeration indication of role"], [data-testid="job-salary"], [class*="salary"]').text());
         if (!title || !jobUrl) return;
         jobs.push({
             jobUrl,
@@ -323,13 +333,43 @@ const parseDomFallbackDetail = ($) => {
         if (zipMatch) postalCode = zipMatch[0];
     }
     
-    // Description - try multiple selectors
-    const descriptionEl = $('.meta-content__description, .block__description, .content-block__description').first()
-        || $('.job-description, .job-details, .description').first()
-        || $('[data-testid="job-description"]').first()
-        || $('.cards__backside-description').first();
+    // Description - try multiple selectors with broader coverage
+    let descriptionHtml = null;
     
-    const descriptionHtml = descriptionEl.html() || null;
+    // Try specific selectors first
+    const descriptionSelectors = [
+        '.meta-content__description',
+        '.block__description',
+        '.content-block__description',
+        '[data-testid="job-description"]',
+        '.job-description',
+        '.job-details',
+        '.description',
+        '.cards__backside-description',
+        '[class*="description"]',
+        'main [class*="content"]',
+        '.job-detail-content',
+        '#job-description',
+    ];
+    
+    for (const selector of descriptionSelectors) {
+        const el = $(selector).first();
+        if (el.length && el.html()?.trim()) {
+            descriptionHtml = el.html();
+            break;
+        }
+    }
+    
+    // If still no description, try to get the main content area
+    if (!descriptionHtml) {
+        const mainContent = $('main, [role="main"], .main-content').first();
+        if (mainContent.length) {
+            // Remove header, footer, nav, sidebar elements
+            const clone = mainContent.clone();
+            clone.find('header, footer, nav, aside, .header, .footer, .nav, .sidebar').remove();
+            descriptionHtml = clone.html();
+        }
+    }
     
     // Posted date
     const postedAt = $('[data-testid="job-posted-date"]').attr('datetime') 
@@ -597,18 +637,40 @@ await Actor.main(async () => {
                 for (const hit of hits) {
                     const source = hit?._source;
                     if (!source) continue;
-                    let jobUrl = source.BlueXJobData?.JobUrl || source.JobInformation?.JobUrl || null;
+                    
+                    // Priority 1: Direct URL from JobUrl field (most reliable)
+                    let jobUrl = source.JobInformation?.JobUrl || source.BlueXJobData?.JobUrl || null;
+                    
+                    // Priority 2: Build from ApplyUrl if available
+                    if (!jobUrl && source.JobInformation?.ApplyUrl) {
+                        jobUrl = source.JobInformation.ApplyUrl;
+                    }
+                    
+                    // Make relative URLs absolute
                     if (jobUrl && !jobUrl.startsWith('http')) {
                         const baseOrigin = request.userData.baseOrigin || getBaseFromUrl(request.url);
                         jobUrl = new URL(jobUrl, baseOrigin).href;
                     }
-                    if (!jobUrl) {
+                    
+                    // Priority 3: Only compose URL as last resort if we have the job ID
+                    if (!jobUrl && (source.BlueXJobData?.JobId || source.JobId || hit._id)) {
                         jobUrl = composeJobUrl({ ...source, _id: hit._id }, request.userData.baseOrigin);
                     }
-                    if (!jobUrl) continue;
+                    
+                    if (!jobUrl) {
+                        crawlerLog.warning(`Skipping job - no valid URL found for: ${source.JobInformation?.Title || 'Unknown'}`);
+                        continue;
+                    }
+                    
                     const jobId = source.BlueXJobData?.JobId || source.JobId || hit._id;
                     if (dedupe && jobId && state.seenJobs.has(jobId)) continue;
                     if (dedupe && state.seenJobs.has(jobUrl)) continue;
+                    
+                    // Log first 3 job URLs to help debug
+                    if (previews.length < 3) {
+                        crawlerLog.info(`Job URL extracted: ${jobUrl} (Title: ${source.JobInformation?.Title || source.BlueXJobData?.Title})`);
+                    }
+                    
                     const locationInfo = deriveLocation(source);
                     const salary = extractSalary(source);
                     previews.push({
@@ -785,13 +847,16 @@ await Actor.main(async () => {
                     return;
                 }
 
-                // Check if job is no longer available
-                const notAvailableText = $('body').text().toLowerCase();
-                const isNotAvailable = notAvailableText.includes('no longer available') 
-                    || notAvailableText.includes('not available') 
-                    || notAvailableText.includes('position has been filled')
-                    || notAvailableText.includes('job posting has expired')
-                    || $('[class*="not-available"], [class*="expired"], [class*="filled"]').length > 0;
+                // Check if job is no longer available - be specific to avoid false positives
+                const pageTitle = $('h1, title').first().text().toLowerCase();
+                const mainContent = $('main, [role="main"], .content, #content').first().text().toLowerCase();
+                const contentToCheck = pageTitle + ' ' + mainContent;
+                
+                const isNotAvailable = (contentToCheck.includes('sorry') && contentToCheck.includes('not available'))
+                    || (contentToCheck.includes('job') && contentToCheck.includes('no longer available'))
+                    || contentToCheck.includes('position has been filled')
+                    || contentToCheck.includes('this job posting has expired')
+                    || $('.error-message, .not-found, .job-expired').length > 0;
                 
                 if (isNotAvailable) {
                     crawlerLog.warning(`Job no longer available: ${jobUrl}`);
