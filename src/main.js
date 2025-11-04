@@ -172,6 +172,7 @@ const extractSalary = (source = {}) => {
         maximum: salary.SalaryMax || jobData.MaximumSalary || null,
         currency: salary.CurrencyId || jobData.Currency || null,
         interval: salary.CompensationType || jobData.CompensationType || null,
+        text: jobData.CompensationText || null,
     };
 };
 
@@ -214,6 +215,57 @@ const parseDomFallbackDetail = (html) => {
 };
 
 const softNormalize = (value, fallback) => value ?? fallback ?? null;
+
+const formatSalaryString = (salary = {}, fallback) => {
+    if (!salary) return normalizeWhitespace(fallback);
+    const currency = salary.currency || salary.Currency || null;
+    const min = salary.minimum || salary.min || null;
+    const max = salary.maximum || salary.max || null;
+    const interval = salary.interval || salary.intervalText || null;
+    const pieces = [];
+    if (currency && (min || max)) pieces.push(currency);
+    if (min && max && Number(min) !== Number(max)) {
+        pieces.push(`${min} - ${max}`);
+    } else if (min || max) {
+        pieces.push(min || max);
+    }
+    if (interval) pieces.push(interval);
+    const textual = salary.text || fallback;
+    const formatted = normalizeWhitespace(pieces.join(' '));
+    return formatted || normalizeWhitespace(textual);
+};
+
+const STRING_FIELD_SANITIZERS = {
+    title: normalizeWhitespace,
+    company: normalizeWhitespace,
+    location: normalizeWhitespace,
+    date_posted: normalizeWhitespace,
+    job_type: normalizeWhitespace,
+    job_category: normalizeWhitespace,
+    description_html: (value) => (typeof value === 'string' ? value : value == null ? null : String(value)),
+    description_text: normalizeWhitespace,
+    job_url: (value) => (value == null ? null : String(value)),
+    salary: normalizeWhitespace,
+};
+
+const sanitizeForDataset = (record) => {
+    const output = { ...record };
+    for (const [field, sanitizer] of Object.entries(STRING_FIELD_SANITIZERS)) {
+        if (!(field in output)) continue;
+        const value = output[field];
+        if (value === undefined || value === null) {
+            delete output[field];
+            continue;
+        }
+        const sanitized = sanitizer(value);
+        if (sanitized === undefined || sanitized === null || sanitized === '') {
+            delete output[field];
+        } else {
+            output[field] = sanitized;
+        }
+    }
+    return output;
+};
 
 await Actor.main(async () => {
     const input = (await Actor.getInput()) || {};
@@ -381,6 +433,7 @@ await Actor.main(async () => {
                         postalCode: locationInfo.postalCode,
                         jobType: normalizeWhitespace(source.JobInformation?.JobType || source.BlueXJobData?.JobType),
                         postedAt: source.JobDates?.DateCreated || source.JobDates?.DateCreatedTime || null,
+                        jobCategory: normalizeWhitespace(source.BlueXSanitized?.Specialism || source.BlueXJobData?.Specialism),
                         salary,
                         snippet: htmlToText(source.JobInformation?.Description || source.BlueXJobData?.Description),
                         sourceRaw: hit,
@@ -430,7 +483,7 @@ await Actor.main(async () => {
                 if (!collectDetails) {
                     const remaining = resultsWanted - state.saved;
                     if (remaining > 0) {
-                        const toStore = previews.slice(0, remaining).map((preview) => ({
+                        const toStore = previews.slice(0, remaining).map((preview) => sanitizeForDataset({
                             title: preview.title,
                             company: preview.company,
                             job_url: preview.jobUrl,
@@ -441,7 +494,9 @@ await Actor.main(async () => {
                             country: preview.country,
                             postal_code: preview.postalCode,
                             job_type: preview.jobType,
+                            job_category: preview.jobCategory,
                             date_posted: preview.postedAt,
+                            salary: formatSalaryString(preview.salary),
                             salary_min: preview.salary?.minimum || null,
                             salary_max: preview.salary?.maximum || null,
                             salary_currency: preview.salary?.currency || null,
@@ -565,12 +620,15 @@ await Actor.main(async () => {
                     postal_code: softNormalize(locationInfo.postalCode, jobPostingAddress?.postalCode || jobPostingAddress?.address?.postalCode),
                     job_type: softNormalize(jobData?.JobInformation?.JobType, preview?.jobType || employmentType),
                     employment_type: softNormalize(employmentType, jobData?.JobInformation?.JobType),
+                    job_category: softNormalize(jobData?.BlueXSanitized?.Specialism, preview?.jobCategory || jsonLd.jobPosting?.industry),
                     date_posted: softNormalize(jobData?.JobDates?.DateCreatedTime, domFallback.postedAt || jsonLd.jobPosting?.datePosted || preview?.postedAt),
                     valid_through: softNormalize(jsonLd.jobPosting?.validThrough, jobData?.JobDates?.ExpirationDate),
                     salary_min: salary.minimum || jsonLd.jobPosting?.baseSalary?.value?.minValue || jsonLd.jobPosting?.baseSalary?.value?.value || null,
                     salary_max: salary.maximum || jsonLd.jobPosting?.baseSalary?.value?.maxValue || null,
                     salary_currency: salary.currency || jsonLd.jobPosting?.baseSalary?.value?.currency || null,
                     salary_interval: salary.interval || jsonLd.jobPosting?.baseSalary?.value?.unitText || null,
+                    salary: formatSalaryString(salary, preview?.salary?.text),
+                    salary_text: preview?.salary?.text || salary.text || jsonLd.jobPosting?.baseSalary?.value?.text || null,
                     description_html: descriptionHtml,
                     description_text: htmlToText(descriptionHtml),
                     requirements: htmlToText(jobData?.JobInformation?.Requirements || jsonLd.jobPosting?.qualifications || jsonLd.jobPosting?.responsibilities),
@@ -598,7 +656,7 @@ await Actor.main(async () => {
                     extraction_notes: 'Combined __ROUTE_DATA__.jobData payload, JSON-LD, and DOM fallbacks.',
                 };
 
-                await dataset.pushData(record);
+                await dataset.pushData(sanitizeForDataset(record));
                 state.saved += 1;
                 state.pendingDetail.delete(jobUrl);
                 crawlerLog.info(`Stored detail: ${record.title || record.job_url}. Total ${state.saved}`);
