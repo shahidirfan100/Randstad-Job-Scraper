@@ -360,7 +360,6 @@ await Actor.main(async () => {
         maxConcurrency,
         minConcurrency: 1,
         maxRequestRetries: 2,
-        requestTimeoutSecs: 45,
         maxRequestsPerMinute: 60,
         additionalMimeTypes: ['application/json'],
         useSessionPool: true,
@@ -372,7 +371,7 @@ await Actor.main(async () => {
             },
         },
         preNavigationHooks: [
-            async ({ request, session }, gotoOptions) => {
+            async ({ request, session }, requestOptions) => {
                 if (!session.userData.headers) {
                     session.userData.headers = headerGenerator.getHeaders({
                         httpVersion: '2',
@@ -385,12 +384,14 @@ await Actor.main(async () => {
                 headers.Referer = request.userData.referer || `${BASE_URL}/`;
                 headers['sec-ch-ua-platform'] = headers['sec-ch-ua-platform'] || '"Windows"';
                 headers['accept-language'] = headers['accept-language'] || 'en-US,en;q=0.9';
-                gotoOptions.headers = {
+                requestOptions.headers = {
                     ...headers,
-                    ...gotoOptions.headers,
+                    ...(requestOptions.headers || {}),
                 };
-                gotoOptions.timeout = randomBetween(20000, 32000);
-                gotoOptions.retry = { limit: 1 };
+                requestOptions.timeout = {
+                    request: randomBetween(20000, 32000),
+                };
+                requestOptions.retry = { limit: 1 };
                 await waitHumanLike('micro');
             },
         ],
