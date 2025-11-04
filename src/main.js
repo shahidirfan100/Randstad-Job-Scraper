@@ -4,12 +4,10 @@ import {
     CheerioCrawler,
     Dataset,
     RequestQueue,
-    Session,
     sleep,
 } from 'crawlee';
 import { load as cheerioLoad } from 'cheerio';
 import { HeaderGenerator } from 'header-generator';
-import { JSDOM } from 'jsdom';
 
 const BASE_URL = 'https://www.randstad.com';
 const JOBS_PATH = '/jobs/';
@@ -373,11 +371,6 @@ await Actor.main(async () => {
             maxPoolSize: 40,
             sessionOptions: {
                 maxUsageCount: 4,
-            },
-            createSessionFunction: async (_pool, sessionOptions) => {
-                const sanitized = { ...sessionOptions };
-                delete sanitized.maxSessionAgeSecs;
-                return new Session(sanitized);
             },
         },
         preNavigationHooks: [
