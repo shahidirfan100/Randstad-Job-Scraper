@@ -268,14 +268,91 @@ const parseDomFallbackList = ($, baseUrl) => {
     return jobs;
 };
 
-const parseDomFallbackDetail = (html) => {
-    if (!html) return { title: null, descriptionHtml: null, postedAt: null };
-    const $ = cheerioLoad(html);
-    const descriptionEl = $('.meta-content__description, .block__description, .content-block__description, [data-testid="job-description"]').first();
+const parseDomFallbackDetail = ($) => {
+    if (!$) return { 
+        title: null, 
+        company: null,
+        location: null,
+        descriptionHtml: null, 
+        postedAt: null,
+        jobType: null,
+        salary: null,
+    };
+    
+    // Multiple selectors for title
+    const title = $('h1').first().text().trim() 
+        || $('.content-block__title, .block__title, .meta-content__title').first().text().trim()
+        || $('[data-testid="job-title"]').first().text().trim()
+        || null;
+    
+    // Company name
+    const company = $('.cards__logo-title-container').first().text().trim()
+        || $('[data-testid="company-name"]').first().text().trim()
+        || 'Randstad';
+    
+    // Location
+    const location = $('.behat-location').first().text().trim()
+        || $('[data-testid="job-location"]').first().text().trim()
+        || $('[class*="location"]').first().text().trim()
+        || null;
+    
+    // Parse location into components
+    let city = null, region = null, country = null, postalCode = null;
+    if (location) {
+        const parts = location.split(',').map(p => p.trim());
+        if (parts.length >= 3) {
+            city = parts[0];
+            region = parts[1];
+            country = parts[2];
+        } else if (parts.length === 2) {
+            city = parts[0];
+            country = parts[1];
+        } else {
+            city = location;
+        }
+        const zipMatch = location.match(/\b\d{5}(?:-\d{4})?\b/);
+        if (zipMatch) postalCode = zipMatch[0];
+    }
+    
+    // Description - try multiple selectors
+    const descriptionEl = $('.meta-content__description, .block__description, .content-block__description').first()
+        || $('.job-description, .job-details, .description').first()
+        || $('[data-testid="job-description"]').first()
+        || $('.cards__backside-description').first();
+    
+    const descriptionHtml = descriptionEl.html() || null;
+    
+    // Posted date
+    const postedAt = $('[data-testid="job-posted-date"]').attr('datetime') 
+        || $('time[datetime]').attr('datetime')
+        || $('.behat-expirationDate').first().text().trim()
+        || $('[class*="date"]').first().text().trim()
+        || null;
+    
+    // Job type
+    const jobType = $('.behat-jobType').first().text().trim()
+        || $('[data-testid="job-type"]').first().text().trim()
+        || $('[class*="job-type"]').first().text().trim()
+        || null;
+    
+    // Salary
+    const salary = $('.behat-salary').first().text().trim()
+        || $('[data-testid="job-salary"]').first().text().trim()
+        || $('[class*="salary"]').first().text().trim()
+        || null;
+    
     return {
-        title: $('h1').first().text().trim() || null,
-        descriptionHtml: descriptionEl.html() || null,
-        postedAt: $('[data-testid="job-posted-date"]').attr('datetime') || $('time[datetime]').attr('datetime') || null,
+        title,
+        company,
+        location,
+        city,
+        region,
+        country,
+        postalCode,
+        descriptionHtml,
+        postedAt,
+        jobType,
+        salary: salary ? { text: salary } : null,
     };
 };
 
@@ -701,12 +778,16 @@ await Actor.main(async () => {
 
                 const jsonLd = extractJsonLd($);
                 const jobPosting = jsonLd.jobPosting || null;
-                const domFallback = parseDomFallbackDetail($.html());
+                const domFallback = parseDomFallbackDetail($);
 
                 const hasStructuredData = Boolean(jobData || jobPosting);
-                if (!hasStructuredData && backoffAttempt < 2) {
+                
+                // If we have DOM data with at least title and description, we can proceed
+                const hasDomData = Boolean(domFallback.title && domFallback.descriptionHtml);
+                
+                if (!hasStructuredData && !hasDomData && backoffAttempt < 2) {
                     const delay = (2 ** backoffAttempt) * 1000 + randomBetween(250, 900);
-                    crawlerLog.warning(`Missing jobData/jsonLd for ${jobUrl}. Retrying (${backoffAttempt + 1}/2) after ${delay}ms.`);
+                    crawlerLog.warning(`Missing all data sources for ${jobUrl}. Retrying (${backoffAttempt + 1}/2) after ${delay}ms.`);
                     await sleep(delay);
                     state.pendingDetail.delete(jobUrl);
                     await requestQueue.addRequest({
@@ -721,42 +802,53 @@ await Actor.main(async () => {
                     return;
                 }
                 
-                if (!hasStructuredData && !preview) {
-                    crawlerLog.error(`Unable to extract job detail data for ${jobUrl} - no structured data or preview available`);
+                // If we still have no data after retries, check if we have preview or DOM data
+                if (!hasStructuredData && !hasDomData && !preview) {
+                    crawlerLog.error(`Unable to extract job detail data for ${jobUrl} - no data sources available`);
                     state.pendingDetail.delete(jobUrl);
                     return;
                 }
+                
+                // Log which data source we're using
+                const dataSources = [];
+                if (jobData) dataSources.push('__ROUTE_DATA__');
+                if (jobPosting) dataSources.push('JSON-LD');
+                if (hasDomData) dataSources.push('DOM');
+                if (preview) dataSources.push('preview');
+                crawlerLog.info(`Extracting from: ${dataSources.join(', ')} for ${jobUrl}`);
 
                 const locationFromJobData = deriveLocation(jobData) || {};
                 const locationFromJsonLd = deriveLocationFromJobPosting(jobPosting) || {};
                 const locationInfo = {
-                    city: locationFromJobData.city || locationFromJsonLd.city || preview?.city || null,
-                    region: locationFromJobData.region || locationFromJsonLd.region || preview?.region || null,
-                    country: locationFromJobData.country || locationFromJsonLd.country || preview?.country || null,
-                    postalCode: locationFromJobData.postalCode || locationFromJsonLd.postalCode || preview?.postalCode || null,
-                    location: locationFromJobData.location || locationFromJsonLd.location || preview?.location || null,
+                    city: domFallback.city || locationFromJobData.city || locationFromJsonLd.city || preview?.city || null,
+                    region: domFallback.region || locationFromJobData.region || locationFromJsonLd.region || preview?.region || null,
+                    country: domFallback.country || locationFromJobData.country || locationFromJsonLd.country || preview?.country || null,
+                    postalCode: domFallback.postalCode || locationFromJobData.postalCode || locationFromJsonLd.postalCode || preview?.postalCode || null,
+                    location: domFallback.location || locationFromJobData.location || locationFromJsonLd.location || preview?.location || null,
                 };
 
                 const salaryFromJobData = extractSalary(jobData) || {};
                 const salaryFromJsonLd = extractSalaryFromJobPosting(jobPosting) || {};
+                const salaryFromDom = domFallback.salary || {};
                 const combinedSalary = {
-                    minimum: salaryFromJobData.minimum ?? salaryFromJsonLd.minimum ?? preview?.salary?.minimum ?? null,
-                    maximum: salaryFromJobData.maximum ?? salaryFromJsonLd.maximum ?? preview?.salary?.maximum ?? null,
-                    currency: salaryFromJobData.currency ?? salaryFromJsonLd.currency ?? preview?.salary?.currency ?? null,
-                    interval: salaryFromJobData.interval ?? salaryFromJsonLd.interval ?? preview?.salary?.interval ?? null,
-                    text: salaryFromJobData.text ?? salaryFromJsonLd.text ?? preview?.salary?.text ?? null,
+                    minimum: salaryFromDom.minimum ?? salaryFromJobData.minimum ?? salaryFromJsonLd.minimum ?? preview?.salary?.minimum ?? null,
+                    maximum: salaryFromDom.maximum ?? salaryFromJobData.maximum ?? salaryFromJsonLd.maximum ?? preview?.salary?.maximum ?? null,
+                    currency: salaryFromDom.currency ?? salaryFromJobData.currency ?? salaryFromJsonLd.currency ?? preview?.salary?.currency ?? null,
+                    interval: salaryFromDom.interval ?? salaryFromJobData.interval ?? salaryFromJsonLd.interval ?? preview?.salary?.interval ?? null,
+                    text: salaryFromDom.text ?? salaryFromJobData.text ?? salaryFromJsonLd.text ?? preview?.salary?.text ?? null,
                 };
 
                 const employmentType = (() => {
+                    if (domFallback.jobType) return domFallback.jobType;
                     if (jobData?.JobInformation?.JobType) return jobData.JobInformation.JobType;
                     if (Array.isArray(jobPosting?.employmentType)) return jobPosting.employmentType.join(', ');
                     if (typeof jobPosting?.employmentType === 'string') return jobPosting.employmentType;
                     return preview?.jobType || null;
                 })();
 
-                const descriptionHtml = jobData?.JobInformation?.Description
+                const descriptionHtml = domFallback.descriptionHtml
+                    || jobData?.JobInformation?.Description
                     || jobPosting?.description
-                    || domFallback.descriptionHtml
                     || preview?.snippetHtml
                     || null;
 
@@ -776,8 +868,8 @@ await Actor.main(async () => {
                 );
 
                 const record = {
-                    title: softNormalize(jobData?.JobInformation?.Title, domFallback.title || preview?.title) || 'Untitled',
-                    company: softNormalize(jobData?.JobIdentity?.CompanyName, preview?.company || jsonLd.jobPosting?.hiringOrganization?.name || 'Randstad'),
+                    title: softNormalize(domFallback.title, jobData?.JobInformation?.Title || preview?.title) || 'Untitled',
+                    company: softNormalize(domFallback.company, jobData?.JobIdentity?.CompanyName || preview?.company || jsonLd.jobPosting?.hiringOrganization?.name || 'Randstad'),
                     job_url: jobUrl,
                     job_id: softNormalize(jobData?.JobId, preview?.jobId || identifierFromJsonLd || jobId),
                     reference_number: softNormalize(jobData?.BlueXJobData?.ReferenceNumber, identifierFromJsonLd),
@@ -786,7 +878,7 @@ await Actor.main(async () => {
                     region: softNormalize(locationInfo.region, null),
                     country: softNormalize(locationInfo.country, null),
                     postal_code: softNormalize(locationInfo.postalCode, null),
-                    job_type: softNormalize(jobData?.JobInformation?.JobType, employmentType),
+                    job_type: softNormalize(employmentType, jobData?.JobInformation?.JobType),
                     employment_type: softNormalize(employmentType, jobData?.JobInformation?.JobType),
                     job_category: softNormalize(jobData?.BlueXSanitized?.Specialism, preview?.jobCategory || jobPosting?.industry),
                     date_posted: postedDate,
