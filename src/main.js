@@ -152,6 +152,43 @@ const extractJsonLd = ($) => {
     return { jobPosting: jobPosting || null, all: payloads };
 };
 
+const deriveLocationFromJobPosting = (jobPosting = {}) => {
+    if (!jobPosting) return {};
+    const locationNode = Array.isArray(jobPosting.jobLocation)
+        ? jobPosting.jobLocation[0]
+        : jobPosting.jobLocation || {};
+    const address = locationNode?.address || locationNode || {};
+    const city = address.addressLocality || address.city || null;
+    const region = address.addressRegion || address.region || null;
+    const country = address.addressCountry || address.country || null;
+    const postalCode = address.postalCode || null;
+    const pieces = [city, region, country].filter(Boolean);
+    return {
+        city: city || null,
+        region: region || null,
+        country: country || null,
+        postalCode: postalCode || null,
+        location: pieces.length ? pieces.join(', ') : null,
+    };
+};
+
+const extractSalaryFromJobPosting = (jobPosting = {}) => {
+    const baseSalary = jobPosting?.baseSalary || {};
+    const value = baseSalary?.value || {};
+    const toNumber = (num) => {
+        if (num == null) return null;
+        const parsed = Number(num);
+        return Number.isFinite(parsed) ? parsed : String(num);
+    };
+    return {
+        minimum: toNumber(value.minValue ?? value.value ?? value.minimum),
+        maximum: toNumber(value.maxValue ?? value.maximum),
+        currency: baseSalary.currency || value.currency || null,
+        interval: value.unitText || baseSalary.unitText || null,
+        text: value.text || null,
+    };
+};
+
 const deriveLocation = (source = {}) => {
     const location = source?.JobLocation || {};
     const sanitized = source?.BlueXSanitized || {};
@@ -577,70 +614,101 @@ await Actor.main(async () => {
                 const routeData = extractRouteData($, body?.toString?.());
                 const jobData = routeData?.jobData?.hits?.hits?.[0]?._source || null;
 
-                if (!jobData && backoffAttempt < 3) {
-                    const delay = (2 ** backoffAttempt) * 1000 + randomBetween(250, 900);
-                    crawlerLog.warning(`Missing jobData for ${jobUrl}. Retrying after ${delay}ms.`);
-                    await sleep(delay);
-                    state.pendingDetail.delete(jobUrl);
-                    await requestQueue.addRequest({
-                        url: jobUrl,
-                        uniqueKey: `${jobUrl}#${Date.now()}`,
-                        userData: {
-                            ...request.userData,
-                            backoffAttempt: backoffAttempt + 1,
-                        },
-                    });
-                    session?.markBad?.();
-                    return;
-                }
-                if (!jobData && backoffAttempt >= 3) {
-                    state.pendingDetail.delete(jobUrl);
-                    crawlerLog.error(`Unable to load jobData after retries for ${jobUrl}`);
-                    return;
-                }
-
                 const jsonLd = extractJsonLd($);
+                const jobPosting = jsonLd.jobPosting || null;
                 const domFallback = parseDomFallbackDetail($.html());
 
-                const locationInfo = deriveLocation(jobData) || {};
-                const salary = extractSalary(jobData) || {};
+                if (!jobData && !jobPosting) {
+                    if (backoffAttempt < 3) {
+                        const delay = (2 ** backoffAttempt) * 1000 + randomBetween(250, 900);
+                        crawlerLog.warning(`Missing jobData/jsonLd for ${jobUrl}. Retrying after ${delay}ms.`);
+                        await sleep(delay);
+                        state.pendingDetail.delete(jobUrl);
+                        await requestQueue.addRequest({
+                            url: jobUrl,
+                            uniqueKey: `${jobUrl}#${Date.now()}`,
+                            userData: {
+                                ...request.userData,
+                                backoffAttempt: backoffAttempt + 1,
+                            },
+                        });
+                        session?.markBad?.();
+                        return;
+                    }
+                    state.pendingDetail.delete(jobUrl);
+                    crawlerLog.error(`Unable to extract job detail data for ${jobUrl}`);
+                    return;
+                }
 
-                const jobPostingLocation = (() => {
-                    const raw = jsonLd.jobPosting?.jobLocation;
-                    if (Array.isArray(raw)) return raw[0];
-                    return raw || null;
+                const locationFromJobData = deriveLocation(jobData) || {};
+                const locationFromJsonLd = deriveLocationFromJobPosting(jobPosting) || {};
+                const locationInfo = {
+                    city: locationFromJobData.city || locationFromJsonLd.city || preview?.city || null,
+                    region: locationFromJobData.region || locationFromJsonLd.region || preview?.region || null,
+                    country: locationFromJobData.country || locationFromJsonLd.country || preview?.country || null,
+                    postalCode: locationFromJobData.postalCode || locationFromJsonLd.postalCode || preview?.postalCode || null,
+                    location: locationFromJobData.location || locationFromJsonLd.location || preview?.location || null,
+                };
+
+                const salaryFromJobData = extractSalary(jobData) || {};
+                const salaryFromJsonLd = extractSalaryFromJobPosting(jobPosting) || {};
+                const combinedSalary = {
+                    minimum: salaryFromJobData.minimum ?? salaryFromJsonLd.minimum ?? preview?.salary?.minimum ?? null,
+                    maximum: salaryFromJobData.maximum ?? salaryFromJsonLd.maximum ?? preview?.salary?.maximum ?? null,
+                    currency: salaryFromJobData.currency ?? salaryFromJsonLd.currency ?? preview?.salary?.currency ?? null,
+                    interval: salaryFromJobData.interval ?? salaryFromJsonLd.interval ?? preview?.salary?.interval ?? null,
+                    text: salaryFromJobData.text ?? salaryFromJsonLd.text ?? preview?.salary?.text ?? null,
+                };
+
+                const employmentType = (() => {
+                    if (jobData?.JobInformation?.JobType) return jobData.JobInformation.JobType;
+                    if (Array.isArray(jobPosting?.employmentType)) return jobPosting.employmentType.join(', ');
+                    if (typeof jobPosting?.employmentType === 'string') return jobPosting.employmentType;
+                    return preview?.jobType || null;
                 })();
-                const jobPostingAddress = jobPostingLocation?.address || jobPostingLocation;
-                const employmentType = Array.isArray(jsonLd.jobPosting?.employmentType)
-                    ? jsonLd.jobPosting.employmentType.join(', ')
-                    : jsonLd.jobPosting?.employmentType || null;
 
                 const descriptionHtml = jobData?.JobInformation?.Description
+                    || jobPosting?.description
                     || domFallback.descriptionHtml
                     || null;
+
+                const identifierFromJsonLd = (() => {
+                    const identifier = jobPosting?.identifier;
+                    if (!identifier) return null;
+                    if (typeof identifier === 'string') return identifier;
+                    if (typeof identifier === 'object') return identifier.value || identifier.name || identifier.propertyID || null;
+                    return null;
+                })();
+
+                const postedDate = softNormalize(
+                    jobData?.JobDates?.DateCreatedTime,
+                    domFallback.postedAt
+                        || jobPosting?.datePosted
+                        || preview?.postedAt,
+                );
 
                 const record = {
                     title: softNormalize(jobData?.JobInformation?.Title, domFallback.title || preview?.title),
                     company: softNormalize(jobData?.JobIdentity?.CompanyName, preview?.company || jsonLd.jobPosting?.hiringOrganization?.name || 'Randstad'),
                     job_url: jobUrl,
-                    job_id: softNormalize(jobData?.JobId, preview?.jobId || jsonLd.jobPosting?.identifier || jobPostingLocation?.jobId || jobId),
-                    reference_number: softNormalize(jobData?.BlueXJobData?.ReferenceNumber, jsonLd.jobPosting?.identifier),
-                    location: softNormalize(locationInfo.location, preview?.location || jobPostingAddress?.addressLocality || jobPostingAddress?.address?.addressLocality),
-                    city: softNormalize(locationInfo.city, jobPostingAddress?.addressLocality || jobPostingAddress?.address?.addressLocality),
-                    region: softNormalize(locationInfo.region, jobPostingAddress?.addressRegion || jobPostingAddress?.address?.addressRegion),
-                    country: softNormalize(locationInfo.country, jobPostingAddress?.addressCountry || jobPostingAddress?.address?.addressCountry),
-                    postal_code: softNormalize(locationInfo.postalCode, jobPostingAddress?.postalCode || jobPostingAddress?.address?.postalCode),
-                    job_type: softNormalize(jobData?.JobInformation?.JobType, preview?.jobType || employmentType),
+                    job_id: softNormalize(jobData?.JobId, preview?.jobId || identifierFromJsonLd || jobId),
+                    reference_number: softNormalize(jobData?.BlueXJobData?.ReferenceNumber, identifierFromJsonLd),
+                    location: softNormalize(locationInfo.location, preview?.location),
+                    city: softNormalize(locationInfo.city, null),
+                    region: softNormalize(locationInfo.region, null),
+                    country: softNormalize(locationInfo.country, null),
+                    postal_code: softNormalize(locationInfo.postalCode, null),
+                    job_type: softNormalize(jobData?.JobInformation?.JobType, employmentType),
                     employment_type: softNormalize(employmentType, jobData?.JobInformation?.JobType),
-                    job_category: softNormalize(jobData?.BlueXSanitized?.Specialism, preview?.jobCategory || jsonLd.jobPosting?.industry),
-                    date_posted: softNormalize(jobData?.JobDates?.DateCreatedTime, domFallback.postedAt || jsonLd.jobPosting?.datePosted || preview?.postedAt),
-                    valid_through: softNormalize(jsonLd.jobPosting?.validThrough, jobData?.JobDates?.ExpirationDate),
-                    salary_min: salary.minimum || jsonLd.jobPosting?.baseSalary?.value?.minValue || jsonLd.jobPosting?.baseSalary?.value?.value || null,
-                    salary_max: salary.maximum || jsonLd.jobPosting?.baseSalary?.value?.maxValue || null,
-                    salary_currency: salary.currency || jsonLd.jobPosting?.baseSalary?.value?.currency || null,
-                    salary_interval: salary.interval || jsonLd.jobPosting?.baseSalary?.value?.unitText || null,
-                    salary: formatSalaryString(salary, preview?.salary?.text),
-                    salary_text: preview?.salary?.text || salary.text || jsonLd.jobPosting?.baseSalary?.value?.text || null,
+                    job_category: softNormalize(jobData?.BlueXSanitized?.Specialism, preview?.jobCategory || jobPosting?.industry),
+                    date_posted: postedDate,
+                    valid_through: softNormalize(jobPosting?.validThrough, jobData?.JobDates?.ExpirationDate),
+                    salary_min: combinedSalary.minimum,
+                    salary_max: combinedSalary.maximum,
+                    salary_currency: combinedSalary.currency,
+                    salary_interval: combinedSalary.interval,
+                    salary: formatSalaryString(combinedSalary, preview?.salary?.text),
+                    salary_text: combinedSalary.text || preview?.salary?.text || null,
                     description_html: descriptionHtml,
                     description_text: htmlToText(descriptionHtml),
                     requirements: htmlToText(jobData?.JobInformation?.Requirements || jsonLd.jobPosting?.qualifications || jsonLd.jobPosting?.responsibilities),
