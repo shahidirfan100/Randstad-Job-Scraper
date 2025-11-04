@@ -367,7 +367,6 @@ await Actor.main(async () => {
             maxPoolSize: 40,
             sessionOptions: {
                 maxUsageCount: 4,
-                maxSessionAgeSecs: 300,
             },
         },
         preNavigationHooks: [
