@@ -380,7 +380,6 @@ await Actor.main(async () => {
                 return new Session(sanitized);
             },
         },
-        useCookies: true,
         prepareRequestFunction: async ({ request, session }) => {
             if (!session.userData.headers) {
                 session.userData.headers = headerGenerator.getHeaders({ httpVersion: '2' });
