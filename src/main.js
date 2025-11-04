@@ -10,9 +10,6 @@ import { load as cheerioLoad } from 'cheerio';
 import { HeaderGenerator } from 'header-generator';
 import { JSDOM } from 'jsdom';
 
-const BASE_URL = 'https://www.randstad.com';
-const JOBS_PATH = '/jobs/';
-
 const headerGenerator = new HeaderGenerator({
     browsers: [
         { name: 'chrome', minVersion: 121, maxVersion: 126 },
@@ -36,8 +33,27 @@ const waitHumanLike = async (type = 'short') => {
     await sleep(randomBetween(min, max));
 };
 
-const buildSearchUrl = ({ keyword, location, postedDate, page = 1 }) => {
-    const url = new URL(`${BASE_URL}${JOBS_PATH}`);
+const getBaseFromUrl = (rawUrl) => {
+    try {
+        const { origin } = new URL(rawUrl);
+        return origin;
+    } catch {
+        return 'https://www.randstad.com';
+    }
+};
+
+const getJobsPath = (rawUrl) => {
+    try {
+        const url = new URL(rawUrl);
+        return url.pathname.startsWith('/jobs') ? url.pathname : '/jobs/';
+    } catch {
+        return '/jobs/';
+    }
+};
+
+const buildSearchUrl = ({ keyword, location, postedDate, page = 1, baseOrigin, jobsPath }) => {
+    const path = jobsPath || '/jobs/';
+    const url = new URL(path, baseOrigin || 'https://www.randstad.com');
     if (keyword) url.searchParams.set('q', keyword.trim());
     if (location) url.searchParams.set('location', location.trim());
     if (postedDate && postedDate !== 'any') url.searchParams.set('date', postedDate);
@@ -57,7 +73,7 @@ const htmlToText = (html) => {
     return normalizeWhitespace($.root().text());
 };
 
-const composeJobUrl = (job) => {
+const composeJobUrl = (job, baseOrigin) => {
     const slugParts = [];
     const sanitized = job?.BlueXSanitized || {};
     const jobId = job?.BlueXJobData?.JobId || job?.JobId || job?._id;
@@ -76,7 +92,12 @@ const composeJobUrl = (job) => {
         .filter(Boolean)
         .join('_');
     if (!slug) return null;
-    return `${BASE_URL}${JOBS_PATH}${slug}/`;
+    const base = baseOrigin || 'https://www.randstad.com';
+    const url = new URL(base);
+    url.pathname = `${getJobsPath(url.href).replace(/\/$/, '')}/${slug}/`;
+    url.search = '';
+    url.hash = '';
+    return url.href;
 };
 
 const countableJson = (text, marker) => {
@@ -335,7 +356,13 @@ await Actor.main(async () => {
     if (Array.isArray(startUrls)) initialUrls.push(...startUrls.map((u) => u.url || u));
     if (startUrl) initialUrls.push(startUrl);
     if (url) initialUrls.push(url);
-    if (!initialUrls.length) initialUrls.push(buildSearchUrl({ keyword, location, postedDate }));
+    if (!initialUrls.length) initialUrls.push(buildSearchUrl({
+        keyword,
+        location,
+        postedDate,
+        baseOrigin: 'https://www.randstad.com',
+        jobsPath: '/jobs/',
+    }));
 
     const proxy = proxyConfiguration
         ? await Actor.createProxyConfiguration({ ...proxyConfiguration })
@@ -343,10 +370,26 @@ await Actor.main(async () => {
 
     const requestQueue = await RequestQueue.open();
     for (const initialUrl of initialUrls) {
+        const baseOrigin = getBaseFromUrl(initialUrl);
+        const jobsPath = getJobsPath(initialUrl);
+        const urlToUse = initialUrl.includes('/jobs/')
+            ? initialUrl
+            : buildSearchUrl({
+                keyword,
+                location,
+                postedDate,
+                baseOrigin,
+                jobsPath,
+            });
         await requestQueue.addRequest({
-            url: initialUrl,
-            uniqueKey: initialUrl,
-            userData: { label: 'LIST', pageNo: 1 },
+            url: urlToUse,
+            uniqueKey: urlToUse,
+            userData: {
+                label: 'LIST',
+                pageNo: 1,
+                baseOrigin,
+                jobsPath,
+            },
         });
     }
 
@@ -413,13 +456,14 @@ await Actor.main(async () => {
         },
         preNavigationHooks: [
             async ({ request, session }, requestOptions) => {
+                const baseOrigin = request.userData.baseOrigin || getBaseFromUrl(request.url);
                 if (session && !session.userData.headers) {
                     session.userData.headers = headerGenerator.getHeaders({ httpVersion: '2' });
                 }
                 const baseHeaders = session?.userData.headers || headerGenerator.getHeaders({ httpVersion: '2' });
                 const headers = {
                     ...baseHeaders,
-                    Referer: request.userData.referer || `${BASE_URL}/`,
+                    Referer: request.userData.referer || `${baseOrigin}/`,
                     'sec-ch-ua-platform': '"Windows"',
                     'accept-language': 'en-US,en;q=0.9',
                 };
@@ -431,7 +475,7 @@ await Actor.main(async () => {
                     request: randomBetween(20000, 32000),
                 };
                 if (session && inputCookies.length && !session.userData.cookiesApplied) {
-                    session.setCookies(inputCookies, BASE_URL);
+                    session.setCookies(inputCookies, baseOrigin);
                     session.userData.cookiesApplied = true;
                 }
                 await waitHumanLike('micro');
@@ -457,7 +501,14 @@ await Actor.main(async () => {
                 for (const hit of hits) {
                     const source = hit?._source;
                     if (!source) continue;
-                    const jobUrl = composeJobUrl({ ...source, _id: hit._id }) || source.BlueXJobData?.JobUrl;
+                    let jobUrl = source.BlueXJobData?.JobUrl || source.JobInformation?.JobUrl || null;
+                    if (jobUrl && !jobUrl.startsWith('http')) {
+                        const baseOrigin = request.userData.baseOrigin || getBaseFromUrl(request.url);
+                        jobUrl = new URL(jobUrl, baseOrigin).href;
+                    }
+                    if (!jobUrl) {
+                        jobUrl = composeJobUrl({ ...source, _id: hit._id }, request.userData.baseOrigin);
+                    }
                     if (!jobUrl) continue;
                     const jobId = source.BlueXJobData?.JobId || source.JobId || hit._id;
                     if (dedupe && jobId && state.seenJobs.has(jobId)) continue;
@@ -566,6 +617,8 @@ await Actor.main(async () => {
                         if (state.saved + state.pendingDetail.size >= resultsWanted) break;
                         if (state.pendingDetail.has(preview.jobUrl)) continue;
                         state.pendingDetail.add(preview.jobUrl);
+                        const detailBaseOrigin = getBaseFromUrl(preview.jobUrl);
+                        const detailJobsPath = getJobsPath(preview.jobUrl);
                         const result = await requestQueue.addRequest({
                             url: preview.jobUrl,
                             uniqueKey: preview.jobUrl,
@@ -574,6 +627,8 @@ await Actor.main(async () => {
                                 preview,
                                 jobId: preview.jobId,
                                 referer: request.url,
+                                baseOrigin: detailBaseOrigin,
+                                jobsPath: detailJobsPath,
                                 backoffAttempt: 0,
                             },
                         });
@@ -595,13 +650,26 @@ await Actor.main(async () => {
                 if (nextPage > maxPages || nextPage > totalPages) {
                     return;
                 }
-                const nextUrl = buildSearchUrl({ keyword, location, postedDate, page: nextPage });
+                const nextUrl = buildSearchUrl({
+                    keyword,
+                    location,
+                    postedDate,
+                    page: nextPage,
+                    baseOrigin: request.userData.baseOrigin || getBaseFromUrl(request.url),
+                    jobsPath: request.userData.jobsPath || getJobsPath(request.url),
+                });
                 if (state.seenPages.has(nextUrl)) return;
                 state.seenPages.add(nextUrl);
                 await requestQueue.addRequest({
                     url: nextUrl,
                     uniqueKey: nextUrl,
-                    userData: { label: 'LIST', pageNo: nextPage, referer: request.url },
+                    userData: {
+                        label: 'LIST',
+                        pageNo: nextPage,
+                        referer: request.url,
+                        baseOrigin: request.userData.baseOrigin,
+                        jobsPath: request.userData.jobsPath,
+                    },
                 });
                 await waitHumanLike('long');
                 return;
@@ -610,6 +678,11 @@ await Actor.main(async () => {
             if (label === 'DETAIL') {
                 const { preview, jobId, backoffAttempt = 0 } = request.userData;
                 const jobUrl = request.url;
+
+                if (state.saved >= resultsWanted) {
+                    state.pendingDetail.delete(jobUrl);
+                    return;
+                }
 
                 const routeData = extractRouteData($, body?.toString?.());
                 const jobData = routeData?.jobData?.hits?.hits?.[0]?._source || null;
