@@ -1,5 +1,4 @@
 {
-  "actorSpecification": 1,
   "fields": {
     "title": {
       "type": "string",
