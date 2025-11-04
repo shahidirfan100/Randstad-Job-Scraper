@@ -230,6 +230,15 @@ const deriveLocation = (source = {}) => {
 };
 
 const extractSalary = (source = {}) => {
+    if (!source) {
+        return {
+            minimum: null,
+            maximum: null,
+            currency: null,
+            interval: null,
+            text: null,
+        };
+    }
     const salary = source.Salary || {};
     const jobData = source.BlueXJobData || {};
     return {
