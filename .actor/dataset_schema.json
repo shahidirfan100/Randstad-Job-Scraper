@@ -1,0 +1,94 @@
+{
+  "actorSpecification": 1,
+  "fields": {
+    "title": {
+      "type": "string",
+      "description": "Job title"
+    },
+    "company": {
+      "type": "string",
+      "description": "Company name"
+    },
+    "location": {
+      "type": "string",
+      "description": "Job location"
+    },
+    "date_posted": {
+      "type": "string",
+      "description": "Date the job was posted"
+    },
+    "job_type": {
+      "type": "string",
+      "description": "Type of employment (e.g., full-time, part-time)"
+    },
+    "job_category": {
+      "type": "string",
+      "description": "Job category"
+    },
+    "description_html": {
+      "type": "string",
+      "description": "HTML version of job description"
+    },
+    "description_text": {
+      "type": "string",
+      "description": "Plain text version of job description"
+    },
+    "job_url": {
+      "type": "string",
+      "description": "URL to the job listing"
+    },
+    "salary": {
+      "type": "string",
+      "description": "Salary information if available"
+    }
+  },
+  "views": {
+    "overview": {
+      "title": "Overview",
+      "transformation": {
+        "fields": [
+          "title",
+          "company",
+          "location",
+          "salary",
+          "job_type",
+          "date_posted",
+          "job_url"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "title": {
+            "label": "Job Title",
+            "format": "text"
+          },
+          "company": {
+            "label": "Company",
+            "format": "text"
+          },
+          "location": {
+            "label": "Location",
+            "format": "text"
+          },
+          "salary": {
+            "label": "Salary",
+            "format": "text"
+          },
+          "job_type": {
+            "label": "Job Type",
+            "format": "text"
+          },
+          "date_posted": {
+            "label": "Posted",
+            "format": "text"
+          },
+          "job_url": {
+            "label": "URL",
+            "format": "link"
+          }
+        }
+      }
+    }
+  }
+}

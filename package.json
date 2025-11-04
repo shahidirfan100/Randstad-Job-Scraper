@@ -1,0 +1,17 @@
+{
+  "name": "randstad-jobs-actor",
+  "version": "1.0.0",
+  "description": "Production-grade Randstad job scraper actor powered by CheerioCrawler + got-scraping.",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.js"
+  },
+  "dependencies": {
+    "apify": "^3.4.5",
+    "cheerio": "^1.0.0-rc.12",
+    "crawlee": "^3.14.1",
+    "got-scraping": "^4.0.3",
+    "header-generator": "^2.1.75",
+    "jsdom": "^27.1.0"
+  }
+}

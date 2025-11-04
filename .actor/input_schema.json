@@ -1,0 +1,89 @@
+{
+  "title": "Randstad Jobs Scraper",
+  "description": "Scrape job listings from Randstad global. Provide search URL, keywords, location, and posted date filters. Actor paginates and optionally scrapes detail pages.",
+  "type": "object",
+  "schemaVersion": 1,
+  "properties": {
+    "startUrl": {
+      "title": "Start URL",
+      "type": "string",
+      "description": "Start scraping from a specific Randstad URL. If provided, this will be used instead of the default.",
+      "editor": "textfield"
+    },
+    "keyword": {
+      "title": "Keyword",
+      "type": "string",
+      "description": "Job search keyword(s), e.g., 'Software Developer', 'Marketing Manager', 'Data Analyst'.",
+      "editor": "textfield",
+      "prefill": "software engineer"
+    },
+    "location": {
+      "title": "Location",
+      "type": "string",
+      "description": "Location to search for jobs, e.g., 'New York', 'London'.",
+      "editor": "textfield"
+    },
+    "posted_date": {
+      "title": "Posted Date",
+      "type": "string",
+      "description": "Filter jobs by posted date, e.g., 'last_24_hours', 'last_7_days', 'last_30_days'.",
+      "editor": "select",
+      "enum": ["any", "last_24_hours", "last_7_days", "last_30_days"],
+      "default": "any"
+    },
+    "collectDetails": {
+      "title": "Collect job details",
+      "type": "boolean",
+      "description": "If enabled, scraper opens job detail pages for full description.",
+      "editor": "checkbox",
+      "default": true
+    },
+    "results_wanted": {
+      "title": "Maximum number of jobs",
+      "type": "integer",
+      "description": "The maximum number of jobs to collect. Leave empty to collect all available jobs.",
+      "minimum": 1,
+      "default": 100,
+      "editor": "number"
+    },
+    "max_pages": {
+      "title": "Maximum number of pages",
+      "type": "integer",
+      "description": "A safety cap on the number of search result pages to visit.",
+      "minimum": 1,
+      "editor": "number",
+      "default": 20
+    },
+    "proxyConfiguration": {
+      "title": "Proxy configuration",
+      "type": "object",
+      "description": "Use Apify Proxy (datacenter recommended for Randstad).",
+      "editor": "proxy",
+      "default": {
+        "useApifyProxy": true,
+        "apifyProxyGroups": ["RESIDENTIAL"]
+      }
+    },
+    "cookies": {
+      "title": "Custom cookies (raw header)",
+      "type": "string",
+      "description": "Optional raw 'Cookie' header string. Can help bypass consent banners.",
+      "editor": "textfield"
+    },
+    "cookiesJson": {
+      "title": "Custom cookies (JSON)",
+      "type": "string",
+      "description": "Optional JSON-formatted cookies. Accepts an array (e.g., [{\"name\":\"a\",\"value\":\"1\"}]) or an object map (e.g., {\"a\":\"1\"}).",
+      "editor": "textarea"
+    },
+    "dedupe": {
+      "title": "Deduplicate results",
+      "type": "boolean",
+      "description": "Remove duplicate job URLs from results (in-memory deduplication).",
+      "editor": "checkbox",
+      "default": true
+    }
+  },
+  "required": [],
+  "additionalProperties": false
+}
