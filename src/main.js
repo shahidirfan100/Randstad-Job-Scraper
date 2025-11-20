@@ -87,7 +87,7 @@ Actor.main(async () => {
     // -------------------------------------------------------------------------
     const cheerioCrawler = new CheerioCrawler({
         proxyConfiguration: proxyConf,
-        maxConcurrency: 10,
+        maxConcurrency: 10,          // already fast & safe
         requestHandlerTimeoutSecs: 40,
         maxRequestRetries: 2,
 
@@ -126,7 +126,7 @@ Actor.main(async () => {
             );
 
             crawlerLog.info(
-                `LIST page ${pageNo}: found ${links.size} job-detail links (collected so far=${detailUrls.size}, target=${target})`,
+                `LIST page ${pageNo}: found ${links.size} job-detail links (total=${detailUrls.size}/${target})`,
             );
 
             for (const jobUrl of links) {
@@ -134,7 +134,7 @@ Actor.main(async () => {
                 detailUrls.add(jobUrl);
             }
 
-            crawlerLog.info(
+            crawlerLog.debug(
                 `Total unique DETAIL URLs after page ${pageNo}: ${detailUrls.size}`,
             );
 
@@ -153,7 +153,7 @@ Actor.main(async () => {
             }
 
             const nextUrl = buildNextPageUrl(url);
-            crawlerLog.info(`Enqueueing next LIST page: ${nextUrl}`);
+            crawlerLog.debug(`Enqueueing next LIST page: ${nextUrl}`);
             await enqueueLinks({ urls: [nextUrl] });
         },
 
@@ -167,9 +167,9 @@ Actor.main(async () => {
     // -------------------------------------------------------------------------
     const playwrightCrawler = new PlaywrightCrawler({
         proxyConfiguration: proxyConf,
-        maxConcurrency: 8,
+        maxConcurrency: 12,              // bumped from 8 → faster, still safe
         maxRequestRetries: 1,
-        requestHandlerTimeoutSecs: 60,
+        requestHandlerTimeoutSecs: 40,   // was 60 → fail faster on stuck pages
 
         launchContext: {
             useIncognitoPages: true,
@@ -204,8 +204,8 @@ Actor.main(async () => {
                 locales: ['en-US'],
                 browsers: ['chromium'],
             },
-            retireBrowserAfterPageCount: 50,
-            maxOpenPagesPerBrowser: 2,
+            retireBrowserAfterPageCount: 100, // reuse browsers more
+            maxOpenPagesPerBrowser: 3,        // slight parallelism bump
         },
 
         preNavigationHooks: [
@@ -233,7 +233,7 @@ Actor.main(async () => {
         async requestHandler({ request, page, log: crawlerLog }) {
             if (detailSaved >= target) return;
 
-            crawlerLog.info(`DETAIL page: ${request.url}`);
+            crawlerLog.debug(`DETAIL page: ${request.url}`);
 
             await page
                 .waitForSelector('h1', { timeout: 10000 })
@@ -261,7 +261,7 @@ Actor.main(async () => {
                 const h1 = document.querySelector('h1');
                 result.title = cleanLine(h1?.innerText || '');
 
-                // ---------- SUMMARY: location + salary + contract_type (TEXT-BASED) ----------
+                // ---------- SUMMARY: location + salary + contract_type ----------
                 let location = null;
                 let salary = null;
                 let contractType = null;
@@ -279,7 +279,7 @@ Actor.main(async () => {
                         let summaryEndIdx =
                             jobCatIdx > afterSummaryIdx
                                 ? jobCatIdx
-                                : afterSummaryIdx + 400; // safe window
+                                : afterSummaryIdx + 400;
 
                         if (summaryEndIdx > body.length) {
                             summaryEndIdx = body.length;
@@ -296,7 +296,7 @@ Actor.main(async () => {
                             .filter(Boolean);
 
                         if (lines.length) {
-                            location = lines[0]; // first line is "selangor, selangor"
+                            location = lines[0];
                         }
 
                         const salaryLine = lines.find((l) =>
@@ -319,7 +319,7 @@ Actor.main(async () => {
                 result.salary = salary;
                 result.contractType = contractType;
 
-                // ---------- DESCRIPTION: from "about the company" up to "show more"/"application process"/"share this job"/"related jobs" ----------
+                // ---------- DESCRIPTION ----------
                 let descriptionText = null;
                 let descriptionHtml = null;
 
@@ -356,9 +356,7 @@ Actor.main(async () => {
                         .filter(Boolean);
 
                     if (lines.length) {
-                        // Keep paragraph structure in text:
                         descriptionText = lines.join('\n\n');
-                        // Simple HTML: one <p> per line:
                         descriptionHtml = lines
                             .map((l) => `<p>${escapeHtml(l)}</p>`)
                             .join('');
@@ -395,12 +393,12 @@ Actor.main(async () => {
 
             const item = {
                 title: clean(data.title),
-                location: clean(data.location),              // now from summary, NOT nav
+                location: clean(data.location),
                 contract_type: clean(data.contractType),
                 salary: clean(data.salary),
                 description_text: data.descriptionText
                     ? data.descriptionText.trim()
-                    : null,                                   // keep \n\n formatting
+                    : null,
                 description_html: data.descriptionHtml || null,
                 date_info: {
                     posted: clean(data.posted),
@@ -420,9 +418,16 @@ Actor.main(async () => {
             await Dataset.pushData(item);
             detailSaved++;
 
-            crawlerLog.info(
-                `Saved job #${detailSaved}/${target}: ${item.title} (${item.location || 'location N/A'})`,
-            );
+            // Only log progress occasionally instead of every job
+            if (detailSaved % 10 === 0 || detailSaved === target) {
+                log.info(
+                    `Progress: saved ${detailSaved}/${target} jobs. Last: ${item.title}`,
+                );
+            } else {
+                crawlerLog.debug(
+                    `Saved job #${detailSaved}/${target}: ${item.title}`,
+                );
+            }
         },
 
         failedRequestHandler: async ({ request, error }) => {
