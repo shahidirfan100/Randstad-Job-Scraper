@@ -19,7 +19,6 @@ const clean = (text) => {
 };
 
 // Detect if path is a job detail URL, not a category page
-// e.g. /jobs/medical-device-sales-executive-central-region_selangor_45976286/
 const isJobDetailPath = (path) => {
     try {
         if (!path) return false;
@@ -32,8 +31,7 @@ const isJobDetailPath = (path) => {
     }
 };
 
-// Pagination helper: /jobs/.../       -> /jobs/.../page-2/
-//                    /jobs/.../page-2 -> /jobs/.../page-3/
+// Pagination helper
 const buildNextPageUrl = (urlStr) => {
     const u = new URL(urlStr);
     const path = u.pathname;
@@ -56,9 +54,6 @@ Actor.main(async () => {
     const input = (await Actor.getInput()) || {};
 
     const {
-        // Any Randstad.com list URL works, e.g.:
-        // "https://www.randstad.com/jobs/", "https://www.randstad.com/jobs/l-english/",
-        // "https://www.randstad.com/jobs/s-advertising-marketing-public-relations/"
         startUrl = 'https://www.randstad.com/jobs/',
         results_wanted = 50,
         maxPages = 10,
@@ -87,7 +82,7 @@ Actor.main(async () => {
     // -------------------------------------------------------------------------
     const cheerioCrawler = new CheerioCrawler({
         proxyConfiguration: proxyConf,
-        maxConcurrency: 10,          // already fast & safe
+        maxConcurrency: 10,
         requestHandlerTimeoutSecs: 40,
         maxRequestRetries: 2,
 
@@ -163,13 +158,13 @@ Actor.main(async () => {
     });
 
     // -------------------------------------------------------------------------
-    // PHASE 2: DETAIL PAGES (Playwright – clean location + description_html/text)
+    // PHASE 2: DETAIL PAGES (Playwright – robust description extraction)
     // -------------------------------------------------------------------------
     const playwrightCrawler = new PlaywrightCrawler({
         proxyConfiguration: proxyConf,
-        maxConcurrency: 12,              // bumped from 8 → faster, still safe
+        maxConcurrency: 12,
         maxRequestRetries: 1,
-        requestHandlerTimeoutSecs: 40,   // was 60 → fail faster on stuck pages
+        requestHandlerTimeoutSecs: 40,
 
         launchContext: {
             useIncognitoPages: true,
@@ -204,8 +199,8 @@ Actor.main(async () => {
                 locales: ['en-US'],
                 browsers: ['chromium'],
             },
-            retireBrowserAfterPageCount: 100, // reuse browsers more
-            maxOpenPagesPerBrowser: 3,        // slight parallelism bump
+            retireBrowserAfterPageCount: 100,
+            maxOpenPagesPerBrowser: 3,
         },
 
         preNavigationHooks: [
@@ -319,43 +314,63 @@ Actor.main(async () => {
                 result.salary = salary;
                 result.contractType = contractType;
 
-                // ---------- DESCRIPTION ----------
+                // ---------- DESCRIPTION (ROBUST, MULTI-ANCHOR) ----------
                 let descriptionText = null;
                 let descriptionHtml = null;
 
-                const aboutIdx = lower.indexOf('about the company');
-                if (aboutIdx >= 0) {
+                // 1. Find best anchor inside job details
+                const anchorCandidates = [
+                    'about the company',
+                    'about the job',
+                    'job description',
+                    'responsibilities',
+                ];
+
+                let descStartIdx = -1;
+                for (const a of anchorCandidates) {
+                    const idx = lower.indexOf(a);
+                    if (idx >= 0) {
+                        descStartIdx = idx;
+                        break;
+                    }
+                }
+
+                // 2. Fallback: start from "job details" if no specific anchor
+                if (descStartIdx < 0 && jdIdx >= 0) {
+                    descStartIdx = jdIdx + 'job details'.length;
+                }
+
+                if (descStartIdx >= 0) {
                     const stopCandidates = [];
 
-                    const showMoreIdx = lower.indexOf('show more', aboutIdx);
-                    if (showMoreIdx > aboutIdx) stopCandidates.push(showMoreIdx);
+                    const addStop = (label) => {
+                        const idx = lower.indexOf(label, descStartIdx + 1);
+                        if (idx > descStartIdx) stopCandidates.push(idx);
+                    };
 
-                    const appProcIdx = lower.indexOf(
-                        'the application process',
-                        aboutIdx,
-                    );
-                    if (appProcIdx > aboutIdx) stopCandidates.push(appProcIdx);
-
-                    const shareIdx = lower.indexOf('share this job', aboutIdx);
-                    if (shareIdx > aboutIdx) stopCandidates.push(shareIdx);
-
-                    const relatedIdx = lower.indexOf('related jobs', aboutIdx);
-                    if (relatedIdx > aboutIdx) stopCandidates.push(relatedIdx);
+                    addStop('show more');
+                    addStop('the application process');
+                    addStop('share this job');
+                    addStop('related jobs');
+                    addStop('let similar jobs come to you');
+                    addStop('we will keep you updated when we have similar job postings');
 
                     let endIdx;
                     if (stopCandidates.length) {
                         endIdx = Math.min(...stopCandidates);
                     } else {
-                        endIdx = Math.min(aboutIdx + 4000, body.length);
+                        endIdx = Math.min(descStartIdx + 5000, body.length);
                     }
 
-                    const descRaw = body.slice(aboutIdx, endIdx);
+                    const descRaw = body.slice(descStartIdx, endIdx);
                     const lines = descRaw
                         .split('\n')
                         .map((l) => cleanLine(l))
                         .filter(Boolean);
 
                     if (lines.length) {
+                        // merge repeated blocks (randstad often duplicates after show more)
+                        // we rely on the stop labels to avoid second copy.
                         descriptionText = lines.join('\n\n');
                         descriptionHtml = lines
                             .map((l) => `<p>${escapeHtml(l)}</p>`)
@@ -363,6 +378,7 @@ Actor.main(async () => {
                     }
                 }
 
+                // If still too short, drop it rather than junk
                 if (descriptionText && descriptionText.length < 40) {
                     descriptionText = null;
                     descriptionHtml = null;
@@ -418,7 +434,6 @@ Actor.main(async () => {
             await Dataset.pushData(item);
             detailSaved++;
 
-            // Only log progress occasionally instead of every job
             if (detailSaved % 10 === 0 || detailSaved === target) {
                 log.info(
                     `Progress: saved ${detailSaved}/${target} jobs. Last: ${item.title}`,
