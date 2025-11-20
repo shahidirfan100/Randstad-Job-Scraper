@@ -1,4 +1,4 @@
-// Randstad.com jobs scraper: Cheerio for LIST pages, Playwright for DETAIL pages
+// Randstad.com jobs scraper: Cheerio LIST + Playwright DETAIL (clean description & location)
 import { Actor, log } from 'apify';
 import { CheerioCrawler, PlaywrightCrawler, Dataset } from 'crawlee';
 
@@ -18,26 +18,22 @@ const clean = (text) => {
     return t || null;
 };
 
-// Decide if a URL path looks like a job DETAIL page.
-// Example detail: /jobs/production-supervisor_knowlton_45744186/
-// Example NON-detail: /jobs/s-accounting-auditing/
+// Detect if path is a job detail URL, not a category page
+// e.g. /jobs/medical-device-sales-executive-central-region_selangor_45976286/
 const isJobDetailPath = (path) => {
     try {
         if (!path) return false;
         const segments = path.split('/').filter(Boolean);
         if (segments[0] !== 'jobs') return false;
-
         const lastSeg = segments[segments.length - 1];
-        // Detail pages always end in something like ..._123456
-        return /.+_\d+$/.test(lastSeg);
+        return /.+_\d+$/.test(lastSeg); // must end with _digits
     } catch {
         return false;
     }
 };
 
-// Build next pagination URL for randstad.com LIST pages.
-// /jobs/.../         -> /jobs/.../page-2/
-// /jobs/.../page-2/  -> /jobs/.../page-3/
+// Pagination helper: /jobs/.../       -> /jobs/.../page-2/
+//                    /jobs/.../page-2 -> /jobs/.../page-3/
 const buildNextPageUrl = (urlStr) => {
     const u = new URL(urlStr);
     const path = u.pathname;
@@ -60,10 +56,9 @@ Actor.main(async () => {
     const input = (await Actor.getInput()) || {};
 
     const {
-        // Works with any Randstad.com jobs listing, e.g.:
-        //  - https://www.randstad.com/jobs/
-        //  - https://www.randstad.com/jobs/s-accounting-auditing/
-        //  - https://www.randstad.com/jobs/l-english/
+        // Any Randstad.com list URL works, e.g.:
+        // "https://www.randstad.com/jobs/", "https://www.randstad.com/jobs/l-english/",
+        // "https://www.randstad.com/jobs/s-advertising-marketing-public-relations/"
         startUrl = 'https://www.randstad.com/jobs/',
         results_wanted = 50,
         maxPages = 10,
@@ -74,7 +69,6 @@ Actor.main(async () => {
     const target = Number.isFinite(+results_wanted)
         ? Math.max(1, +results_wanted)
         : 50;
-
     const maxPagesNum = Number.isFinite(+maxPages)
         ? Math.max(1, +maxPages)
         : 10;
@@ -89,7 +83,7 @@ Actor.main(async () => {
     );
 
     // -------------------------------------------------------------------------
-    // PHASE 1: LIST PAGES (Cheerio – only true job detail URLs)
+    // PHASE 1: LIST PAGES (Cheerio – collect only real job detail URLs)
     // -------------------------------------------------------------------------
     const cheerioCrawler = new CheerioCrawler({
         proxyConfiguration: proxyConf,
@@ -169,7 +163,7 @@ Actor.main(async () => {
     });
 
     // -------------------------------------------------------------------------
-    // PHASE 2: DETAIL PAGES (Playwright – robust extraction + description_html)
+    // PHASE 2: DETAIL PAGES (Playwright – clean location + description_html/text)
     // -------------------------------------------------------------------------
     const playwrightCrawler = new PlaywrightCrawler({
         proxyConfiguration: proxyConf,
@@ -246,238 +240,167 @@ Actor.main(async () => {
                 .catch(() => null);
 
             const data = await page.evaluate(() => {
-                const clean = (t) =>
-                    (t || '').replace(/\s+/g, ' ').trim() || null;
+                const cleanLine = (t) =>
+                    (t || '').replace(/\s+/g, ' ').trim();
 
-                // ---- Title ----
+                function escapeHtml(str) {
+                    return String(str)
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;')
+                        .replace(/"/g, '&quot;')
+                        .replace(/'/g, '&#39;');
+                }
+
+                const body = document.body.innerText || '';
+                const lower = body.toLowerCase();
+
+                const result = {};
+
+                // ---------- TITLE ----------
                 const h1 = document.querySelector('h1');
-                const title = clean(h1?.innerText);
+                result.title = cleanLine(h1?.innerText || '');
 
-                const bodyText = document.body.innerText || '';
-
-                // ---- Headings list ----
-                const headings = Array.from(
-                    document.querySelectorAll('h2, h3'),
-                );
-
-                // ---- SUMMARY SECTION: location, contract, salary (DOM) ----
+                // ---------- SUMMARY: location + salary + contract_type (TEXT-BASED) ----------
                 let location = null;
-                let contractType = null;
                 let salary = null;
+                let contractType = null;
 
-                const summaryHeading = headings.find((h) =>
-                    (h.innerText || '')
-                        .toLowerCase()
-                        .includes('summary'),
-                );
+                const jdIdx = lower.indexOf('job details');
+                if (jdIdx >= 0) {
+                    const summaryIdx = lower.indexOf('summary', jdIdx);
+                    if (summaryIdx >= 0) {
+                        const afterSummaryIdx =
+                            summaryIdx + 'summary'.length;
+                        const jobCatIdx = lower.indexOf(
+                            'job category',
+                            afterSummaryIdx,
+                        );
+                        let summaryEndIdx =
+                            jobCatIdx > afterSummaryIdx
+                                ? jobCatIdx
+                                : afterSummaryIdx + 400; // safe window
 
-                if (summaryHeading) {
-                    let ul = summaryHeading.nextElementSibling;
-                    if (!ul || ul.tagName.toLowerCase() !== 'ul') {
-                        ul =
-                            summaryHeading.parentElement &&
-                            summaryHeading.parentElement.querySelector('ul');
-                    }
-
-                    if (ul) {
-                        const items = Array.from(
-                            ul.querySelectorAll('li'),
-                        ).map((li) => clean(li.innerText));
-
-                        if (items.length) {
-                            location = items[0] || null;
+                        if (summaryEndIdx > body.length) {
+                            summaryEndIdx = body.length;
                         }
 
-                        const contractItem = items.find((t) =>
-                            /(temporary|contract|permanent|interim|internship|apprenticeship|temp to perm|full[- ]time|part[- ]time)/i.test(
-                                t || '',
+                        const summaryChunkRaw = body.slice(
+                            afterSummaryIdx,
+                            summaryEndIdx,
+                        );
+
+                        const lines = summaryChunkRaw
+                            .split('\n')
+                            .map((l) => cleanLine(l))
+                            .filter(Boolean);
+
+                        if (lines.length) {
+                            location = lines[0]; // first line is "selangor, selangor"
+                        }
+
+                        const salaryLine = lines.find((l) =>
+                            /€|\$|£|RM|per hour|per month|per year|per annum/i.test(
+                                l,
                             ),
                         );
-                        if (contractItem) contractType = contractItem;
+                        if (salaryLine) salary = salaryLine;
 
-                        const salaryItem = items.find((t) =>
-                            /€|\$|£|per hour|per year|per month|per annum|salary/i.test(
-                                t || '',
+                        const contractLine = lines.find((l) =>
+                            /(permanent|temporary|contract|interim|internship|apprenticeship|full[- ]time|part[- ]time)/i.test(
+                                l,
                             ),
                         );
-                        if (salaryItem) salary = salaryItem;
+                        if (contractLine) contractType = contractLine;
                     }
                 }
 
-                // ---- FALLBACKS – parse from body text if DOM-based fails ----
+                result.location = location;
+                result.salary = salary;
+                result.contractType = contractType;
 
-                if (!location) {
-                    // e.g. "knowlton, québec" or "woodbridge, ontario"
-                    const locMatch = bodyText.match(
-                        /([A-Za-zÀ-ÿ'’\-\s]+,\s*[A-Za-zÀ-ÿ'’\-\s]+)/,
-                    );
-                    if (locMatch) location = clean(locMatch[1]);
-                }
-
-                if (!contractType) {
-                    const ctMatch = bodyText.match(
-                        /(full[- ]time|part[- ]time|permanent|temporary|contract|interim|internship|apprenticeship)/i,
-                    );
-                    if (ctMatch) contractType = clean(ctMatch[1]);
-                }
-
-                if (!salary) {
-                    // Try “Salary” lines or explicit ranges
-                    const salaryLine = bodyText
-                        .split('\n')
-                        .map((l) => l.trim())
-                        .find((l) =>
-                            /(salary|$ ?\d{2,3}[.,]?\d{0,3})/i.test(l),
-                        );
-
-                    if (salaryLine) {
-                        salary = clean(salaryLine);
-                    }
-                }
-
-                // ---- DESCRIPTION: text + sanitized HTML ----
-                const headingJobDetails = headings.find((h) =>
-                    (h.innerText || '')
-                        .toLowerCase()
-                        .includes('job details'),
-                );
-
-                const descNodes = [];
-
-                if (headingJobDetails) {
-                    let el = headingJobDetails.nextElementSibling;
-                    while (
-                        el &&
-                        !/^H[23]$/i.test(el.tagName) &&
-                        !(el.id && /related jobs|similar jobs/i.test(el.id))
-                    ) {
-                        descNodes.push(el);
-                        el = el.nextElementSibling;
-                    }
-                }
-
-                // Fallback: if we didn't get anything, attempt large text block around "job details"
+                // ---------- DESCRIPTION: from "about the company" up to "show more"/"application process"/"share this job"/"related jobs" ----------
                 let descriptionText = null;
                 let descriptionHtml = null;
 
-                // Helper: sanitize HTML (text-only tags)
-                function extractTextualHtml(rootEl) {
-                    if (!rootEl) return '';
-                    const allowedInline = ['strong', 'b', 'em', 'i', 'br'];
-                    const allowedBlock = ['p', 'ul', 'ol', 'li', 'h3', 'h4'];
+                const aboutIdx = lower.indexOf('about the company');
+                if (aboutIdx >= 0) {
+                    const stopCandidates = [];
 
-                    const doc = document.implementation.createHTMLDocument(
-                        '',
+                    const showMoreIdx = lower.indexOf('show more', aboutIdx);
+                    if (showMoreIdx > aboutIdx) stopCandidates.push(showMoreIdx);
+
+                    const appProcIdx = lower.indexOf(
+                        'the application process',
+                        aboutIdx,
                     );
-                    const outRoot = doc.createElement('div');
+                    if (appProcIdx > aboutIdx) stopCandidates.push(appProcIdx);
 
-                    function appendNode(sourceNode, targetParent) {
-                        if (sourceNode.nodeType === Node.TEXT_NODE) {
-                            const text = sourceNode.nodeValue;
-                            if (text && text.trim()) {
-                                targetParent.appendChild(
-                                    doc.createTextNode(text),
-                                );
-                            }
-                            return;
-                        }
-                        if (sourceNode.nodeType !== Node.ELEMENT_NODE) return;
+                    const shareIdx = lower.indexOf('share this job', aboutIdx);
+                    if (shareIdx > aboutIdx) stopCandidates.push(shareIdx);
 
-                        const tag = sourceNode.nodeName.toLowerCase();
+                    const relatedIdx = lower.indexOf('related jobs', aboutIdx);
+                    if (relatedIdx > aboutIdx) stopCandidates.push(relatedIdx);
 
-                        if (
-                            allowedInline.includes(tag) ||
-                            allowedBlock.includes(tag)
-                        ) {
-                            const newEl = doc.createElement(tag);
-                            targetParent.appendChild(newEl);
-                            for (const child of Array.from(
-                                sourceNode.childNodes,
-                            )) {
-                                appendNode(child, newEl);
-                            }
-                            return;
-                        }
-
-                        for (const child of Array.from(
-                            sourceNode.childNodes,
-                        )) {
-                            appendNode(child, targetParent);
-                        }
+                    let endIdx;
+                    if (stopCandidates.length) {
+                        endIdx = Math.min(...stopCandidates);
+                    } else {
+                        endIdx = Math.min(aboutIdx + 4000, body.length);
                     }
 
-                    appendNode(rootEl, outRoot);
-                    return outRoot.innerHTML.trim();
-                }
+                    const descRaw = body.slice(aboutIdx, endIdx);
+                    const lines = descRaw
+                        .split('\n')
+                        .map((l) => cleanLine(l))
+                        .filter(Boolean);
 
-                if (descNodes.length) {
-                    const wrapper = document.createElement('div');
-                    for (const node of descNodes) {
-                        wrapper.appendChild(node.cloneNode(true));
-                    }
-                    const text = clean(wrapper.innerText);
-                    const html = extractTextualHtml(wrapper);
-
-                    if (text && text.length > 40) {
-                        descriptionText = text;
-                        descriptionHtml = html || null;
+                    if (lines.length) {
+                        // Keep paragraph structure in text:
+                        descriptionText = lines.join('\n\n');
+                        // Simple HTML: one <p> per line:
+                        descriptionHtml = lines
+                            .map((l) => `<p>${escapeHtml(l)}</p>`)
+                            .join('');
                     }
                 }
 
-                if (!descriptionText) {
-                    // fallback purely from body text between "job details" and "advantages"/"responsibilities"
-                    const lower = bodyText.toLowerCase();
-                    const jdIndex = lower.indexOf('job details');
-                    if (jdIndex >= 0) {
-                        let endIndex =
-                            lower.indexOf('advantages', jdIndex + 11);
-                        if (endIndex < 0) {
-                            endIndex =
-                                lower.indexOf('responsibilities', jdIndex + 11);
-                        }
-                        if (endIndex < 0) endIndex = jdIndex + 2000;
-
-                        const chunk = bodyText.slice(jdIndex, endIndex);
-                        const cleanedChunk = clean(chunk);
-                        if (cleanedChunk && cleanedChunk.length > 40) {
-                            descriptionText = cleanedChunk;
-                            descriptionHtml = null; // no HTML in this fallback
-                        }
-                    }
+                if (descriptionText && descriptionText.length < 40) {
+                    descriptionText = null;
+                    descriptionHtml = null;
                 }
 
-                // ---- Posted / closes ----
+                result.descriptionText = descriptionText;
+                result.descriptionHtml = descriptionHtml;
+
+                // ---------- POSTED / CLOSES ----------
                 let posted = null;
                 let closes = null;
 
-                const postedMatch = bodyText.match(
+                const postedMatch = body.match(
                     /posted\s+([0-9]{1,2}\s+\w+\s+[0-9]{4}|today|yesterday)/i,
                 );
-                if (postedMatch) posted = clean(postedMatch[0]);
+                if (postedMatch) posted = cleanLine(postedMatch[0]);
 
-                const closesMatch = bodyText.match(
+                const closesMatch = body.match(
                     /closes\s+([0-9]{1,2}\s+\w+\s+[0-9]{4})/i,
                 );
-                if (closesMatch) closes = clean(closesMatch[0]);
+                if (closesMatch) closes = cleanLine(closesMatch[0]);
 
-                return {
-                    title,
-                    location,
-                    contractType,
-                    salary,
-                    descriptionText,
-                    descriptionHtml,
-                    posted,
-                    closes,
-                };
+                result.posted = posted;
+                result.closes = closes;
+
+                return result;
             });
 
             const item = {
                 title: clean(data.title),
-                location: clean(data.location),
+                location: clean(data.location),              // now from summary, NOT nav
                 contract_type: clean(data.contractType),
                 salary: clean(data.salary),
-                description_text: clean(data.descriptionText),
+                description_text: data.descriptionText
+                    ? data.descriptionText.trim()
+                    : null,                                   // keep \n\n formatting
                 description_html: data.descriptionHtml || null,
                 date_info: {
                     posted: clean(data.posted),
