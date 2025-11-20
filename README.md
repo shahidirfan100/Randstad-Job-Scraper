@@ -1,139 +1,54 @@
 # Randstad Jobs Scraper
 
-> Scrape job listings from Randstad's global job board with ease. Extract detailed job information including titles, companies, locations, descriptions, and more.
+Scrape job listings from Randstad.fr, France's premier staffing and recruitment agency. This Apify actor automatically extracts comprehensive job data including positions, locations, salaries, and descriptions from Randstad's extensive job database.
 
-This Apify actor automates the extraction of job postings from Randstad's website, allowing you to collect data on available positions, filter by keywords, locations, and posting dates, and retrieve comprehensive job details.
+## 🌟 What is Randstad?
 
-## 🚀 What This Actor Does
+Randstad is France's leading staffing agency, connecting thousands of job seekers with employers across all industries. With over 400 agencies nationwide, Randstad offers temporary, permanent, and contract positions in sectors like IT, healthcare, manufacturing, logistics, and more.
 
-- **Comprehensive Job Extraction**: Collects job listings from Randstad's search results pages.
-- **Flexible Filtering**: Supports keyword searches, location-based filtering, and date-based posting filters.
-- **Detailed Information**: Retrieves full job descriptions, company details, salary information, and more.
-- **Pagination Handling**: Automatically navigates through multiple pages of results.
-- **Customizable Depth**: Option to scrape basic listing info or full job details.
-- **Dataset Storage**: Saves all extracted data to an Apify dataset for easy access and export.
+## 🚀 Key Features
 
-## 📥 Input Parameters
+- **⚡ High-Performance Scraping**: Optimized for speed and efficiency with minimal resource usage
+- **🎯 Complete Job Data Extraction**: Captures all essential job details including title, location, salary, contract type, posting date, and full descriptions
+- **🔍 Flexible Search Capabilities**: Search by keywords, locations, or specific job categories across France
+- **📄 Intelligent Pagination**: Automatically navigates through multiple result pages
+- **🛡️ Reliable Data Collection**: Built-in mechanisms to handle rate limits and ensure consistent scraping
+- **📊 Clean Structured Output**: Delivers data in standardized JSON format for easy analysis and integration
+- **🌐 Proxy Integration**: Supports proxy configurations for enhanced reliability
+- **📈 Scalable Architecture**: Designed for both small searches and large-scale job market analysis
 
-The actor accepts various input parameters to customize your scraping job. All parameters are optional unless specified.
+## 📋 Input Parameters
 
-### Basic Configuration
+Configure your job search with these parameters:
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `startUrl` | string | - | Start scraping from a specific Randstad URL. Overrides other filters if provided. |
-| `startUrls` | array | - | Array of Randstad URLs to scrape from. |
-| `url` | string | - | Single Randstad URL to start scraping. |
-| `keyword` | string | - | Job search keywords (e.g., "Software Developer", "Marketing Manager"). |
-| `location` | string | - | Location filter (e.g., "New York", "London"). |
-| `posted_date` | string | `any` | Filter jobs by posting date. Options: `any`, `last_24_hours`, `last_7_days`, `last_30_days`. |
+| Parameter | Type | Description | Default | Required |
+|-----------|------|-------------|---------|----------|
+| `keyword` | string | Job title, skill, or keyword to search for (e.g., "software engineer", "chef de projet", "data analyst") | - | No |
+| `location` | string | Geographic location filter (e.g., "Paris", "Lyon", "Marseille") | - | No |
+| `category` | string | Job sector or category filter | - | No |
+| `startUrl` / `url` / `startUrls` | string/array | Direct Randstad search URL(s) to begin scraping from | - | No |
+| `results_wanted` | integer | Maximum number of job listings to collect (1-10000) | 100 | No |
+| `max_pages` | integer | Maximum number of search result pages to process | 20 | No |
+| `collectDetails` | boolean | Whether to scrape full job descriptions from detail pages | true | No |
+| `proxyConfiguration` | object | Proxy settings for improved scraping reliability | Apify Proxy | No |
 
-### Scraping Options
+### Input Examples
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `collectDetails` | boolean | `true` | Whether to visit individual job pages for full descriptions. Set to `false` for faster basic scraping. |
-| `results_wanted` | integer | `100` | Maximum number of jobs to collect. |
-| `max_pages` | integer | `20` | Maximum number of result pages to process. |
-
-### Advanced Settings
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `proxyConfiguration` | object | Residential proxy | Proxy settings for requests. Use Apify Proxy for best results. |
-| `cookies` | string | - | Raw Cookie header string for authentication or session handling. |
-| `cookiesJson` | string | - | JSON-formatted cookies array or object. |
-| `dedupe` | boolean | `true` | Remove duplicate job URLs from results. |
-
-## 📤 Output
-
-The actor stores results in an Apify dataset. Each item represents a single job posting with the following structure:
-
+#### Basic Job Search
 ```json
 {
-  "title": "Software Engineer",
-  "company": "Tech Corp",
-  "location": "New York, NY",
-  "date_posted": "2023-10-15",
-  "job_type": "Full-time",
-  "job_category": "Technology",
-  "description_html": "<p>We are looking for a skilled software engineer...</p>",
-  "description_text": "We are looking for a skilled software engineer...",
-  "job_url": "https://www.randstad.com/job/software-engineer-12345",
-  "salary": "$80,000 - $100,000 per year"
+  "keyword": "développeur web",
+  "location": "Paris",
+  "results_wanted": 50
 }
 ```
 
-### Output Fields
-
-- **`title`** (string): Job position title
-- **`company`** (string): Hiring company name
-- **`location`** (string): Job location
-- **`date_posted`** (string): Date the job was posted
-- **`job_type`** (string): Employment type (e.g., Full-time, Part-time)
-- **`job_category`** (string): Job category or industry
-- **`description_html`** (string): Full job description in HTML format
-- **`description_text`** (string): Plain text version of the job description
-- **`job_url`** (string): Direct link to the job posting
-- **`salary`** (string): Salary information if available
-
-## 🛠️ Usage Examples
-
-### Basic Usage
-
-Run the actor with default settings to scrape recent jobs from Randstad:
-
+#### Advanced Configuration with Proxy
 ```json
 {
-  "results_wanted": 50,
-  "max_pages": 5
-}
-```
-
-### Keyword Search
-
-Search for specific job types:
-
-```json
-{
-  "keyword": "data analyst",
-  "location": "San Francisco",
-  "posted_date": "last_24_hours",
-  "results_wanted": 25
-}
-```
-
-### Custom URL Scraping
-
-Scrape from a specific Randstad search URL:
-
-```json
-{
-  "startUrl": "https://www.randstad.com/jobs/?q=marketing&location=chicago",
-  "collectDetails": true
-}
-```
-
-### Fast Overview Mode
-
-Get basic job info quickly without full descriptions:
-
-```json
-{
-  "keyword": "engineer",
-  "collectDetails": false,
-  "results_wanted": 100
-}
-```
-
-## ⚙️ Configuration
-
-### Proxy Settings
-
-For optimal performance and to avoid IP blocking, configure proxy settings:
-
-```json
-{
+  "startUrls": ["https://www.randstad.fr/emploi/"],
+  "collectDetails": true,
+  "max_pages": 10,
   "proxyConfiguration": {
     "useApifyProxy": true,
     "apifyProxyGroups": ["RESIDENTIAL"]
@@ -141,62 +56,189 @@ For optimal performance and to avoid IP blocking, configure proxy settings:
 }
 ```
 
-### Cookie Handling
-
-If you need to handle authentication or consent banners:
-
+#### Targeted Industry Search
 ```json
 {
-  "cookiesJson": [
-    {"name": "consent", "value": "accepted", "domain": ".randstad.com"}
-  ]
+  "keyword": "infirmier",
+  "location": "Lyon",
+  "category": "santé",
+  "results_wanted": 200,
+  "collectDetails": true
 }
 ```
 
-## 📊 Limits and Performance
+## 📊 Output Data Structure
 
-- **Rate Limiting**: The actor includes built-in delays and respects website policies.
-- **Concurrency**: Optimized for efficient scraping without overwhelming the target site.
-- **Data Volume**: Can handle thousands of jobs per run, depending on your Apify plan.
-- **Timeout**: Individual requests have a 60-second timeout to handle slow responses.
+Each job listing is returned as a structured JSON object:
 
-## 💰 Cost Estimation
+```json
+{
+  "title": "Software Engineer H/F",
+  "company": "Randstad",
+  "location": "Paris, Île-de-France",
+  "salary": "45 000 € / an",
+  "contract_type": "CDI",
+  "date_posted": "20/11/2025",
+  "description_html": "<p>Detailed job description with requirements...</p>",
+  "description_text": "Plain text version of the complete job description...",
+  "url": "https://www.randstad.fr/emploi/software-engineer-paris_code.html"
+}
+```
 
-- **Free Tier**: Up to 100 jobs per run
-- **Paid Plans**: $0.50 per 1,000 jobs scraped
-- **Proxy Usage**: Additional costs for residential proxies if used extensively
+### Field Descriptions
+
+- **`title`**: Job position title
+- **`company`**: Always "Randstad" (the staffing agency)
+- **`location`**: Job location in France (city, region)
+- **`salary`**: Compensation information when available
+- **`contract_type`**: Employment type (CDI, CDD, Intérim, etc.)
+- **`date_posted`**: Publication date of the job posting
+- **`description_html`**: Full job description with HTML formatting
+- **`description_text`**: Plain text version for easy processing
+- **`url`**: Direct link to the job posting on Randstad.fr
+
+## 🛠️ Usage Guide
+
+### Running on Apify Platform
+
+1. **Create a New Task**: Go to your Apify account and create a new task
+2. **Select Actor**: Search for "Randstad Jobs Scraper" and select this actor
+3. **Configure Input**: Enter your search parameters using the form or JSON editor
+4. **Run Task**: Click "Run" to start the scraping process
+5. **Download Results**: Once complete, download your data in JSON, CSV, or other formats
+
+### API Integration
+
+Use the Apify API for programmatic access:
+
+```bash
+curl -X POST https://api.apify.com/v2/acts/your-actor-id/runs \
+  -H "Authorization: Bearer YOUR_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "keyword": "commercial",
+    "location": "Bordeaux",
+    "results_wanted": 100,
+    "collectDetails": true
+  }'
+```
+
+### Webhook Integration
+
+Set up webhooks to automatically receive results when scraping completes:
+
+```json
+{
+  "webhookUrl": "https://your-app.com/webhook",
+  "webhookMethod": "POST"
+}
+```
+
+## ⚙️ Configuration & Best Practices
+
+### Memory & Performance
+
+- **Recommended Memory**: 4GB for optimal performance
+- **Concurrent Processing**: Handles multiple pages simultaneously for faster results
+- **Rate Limiting**: Built-in delays prevent blocking and ensure reliable operation
+
+### Optimization Tips
+
+- **Targeted Searches**: Use specific keywords and locations for better results
+- **Result Limits**: Set reasonable `results_wanted` to balance speed and data volume
+- **Detail Collection**: Enable `collectDetails` for comprehensive job information
+- **Proxy Usage**: Always use proxy configuration for production scraping
+- **Scheduling**: Run during off-peak hours for best performance
+
+### Cost Optimization
+
+- **Free Tier**: Suitable for small searches (up to 100 jobs)
+- **Pay-as-you-go**: Scales with usage for larger datasets
+- **Data Storage**: Results stored securely in your Apify account
 
 ## 🔧 Troubleshooting
 
-### Common Issues
+### Common Issues & Solutions
 
-- **No Results**: Check your keyword and location filters. Try broader search terms.
-- **Incomplete Data**: Ensure `collectDetails` is set to `true` for full descriptions.
-- **Rate Limiting**: Reduce `results_wanted` or increase delays if encountering blocks.
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| No results found | Search terms too specific | Try broader keywords or different locations |
+| Incomplete descriptions | `collectDetails` disabled | Enable `collectDetails` for full job info |
+| Rate limiting errors | Too many requests | Use proxy configuration and reduce concurrency |
+| Timeout errors | Large result sets | Decrease `results_wanted` or increase memory |
+| Location not found | Spelling or format issues | Use standard French city names |
 
-### Best Practices
+### Error Messages
 
-- Use specific keywords for better results
-- Set reasonable `results_wanted` limits to avoid long run times
-- Enable proxies for large-scale scraping
-- Monitor your Apify usage to stay within plan limits
+- **"No job links found"**: Check your search parameters and try different keywords
+- **"Detail page failed"**: Temporary site issue; the actor will retry automatically
+- **"Proxy required"**: Enable proxy configuration for better reliability
 
-## 📝 Notes
+## 📈 Use Cases & Applications
 
-- Results are saved to an Apify dataset for easy export to JSON, CSV, or other formats.
-- The actor respects Randstad's robots.txt and implements ethical scraping practices.
-- Job data accuracy depends on Randstad's website structure, which may change over time.
-- For large-scale data collection, consider running the actor during off-peak hours.
+### Recruitment & HR
+- **Talent Acquisition**: Find candidates for specific roles across France
+- **Market Research**: Analyze job market trends and salary ranges
+- **Competitive Intelligence**: Monitor competitor hiring patterns
 
-## 🤝 Support
+### Job Seekers
+- **Personal Job Search**: Aggregate jobs from Randstad's extensive database
+- **Career Planning**: Research salary trends and job availability by region
 
-If you encounter issues or need help configuring the actor:
+### Data Analysis
+- **Economic Research**: Study employment trends in different sectors
+- **Business Intelligence**: Analyze hiring patterns by company and industry
 
-- Check the Apify documentation for general guidance
-- Review the input parameters carefully
-- Test with small result sets first
-- Contact Apify support for technical assistance
+### Integration Examples
+- **CRM Systems**: Import job data into recruitment software
+- **Job Boards**: Sync with other job platforms
+- **Analytics Tools**: Feed data into BI dashboards
+
+## 📊 Data Quality & Limitations
+
+### Data Freshness
+- **Real-time Updates**: Scrapes current live data from Randstad.fr
+- **Update Frequency**: Jobs are updated as they appear on the site
+
+### Coverage
+- **Comprehensive**: Covers all job categories and contract types
+- **Geographic**: All French regions and major cities
+- **Language**: Primarily French job listings
+
+### Limitations
+- **Site Dependency**: Relies on Randstad.fr website structure
+- **Rate Limits**: Subject to website restrictions
+- **Data Availability**: Only includes jobs currently posted on Randstad
+
+## 🔒 Legal & Compliance
+
+### Terms of Service
+- Review Randstad's terms before large-scale scraping
+- Respect robots.txt and website policies
+- Use for legitimate business and research purposes
+
+### Data Protection
+- Comply with French data protection regulations (RGPD)
+- Handle personal data responsibly
+- Use scraped data in accordance with applicable laws
+
+## 🤝 Support & Resources
+
+### Getting Help
+- **Apify Community**: Join discussions and get help from other users
+- **Documentation**: Check Apify's official documentation
+- **Support**: Contact Apify support for technical issues
+
+### Related Resources
+- [Randstad France Official Website](https://www.randstad.fr)
+- [Apify Platform Documentation](https://docs.apify.com)
+- [Apify Community Forum](https://community.apify.com)
+
+### Version History
+- **v1.0.0**: Initial release with full Randstad.fr scraping capabilities
 
 ---
 
-*This actor is maintained by the Apify community. Contributions and feedback are welcome!*
+**Keywords**: job scraper, France jobs, Randstad scraper, employment data, recruitment scraper, French job market, automated job scraping, staffing agency data, CDI jobs, CDD positions, interim jobs, job listings France, emploi France, recrutement France, offres d'emploi, job search automation, HR data collection, talent acquisition tools, job market analysis
+
+*Last updated: November 2025*

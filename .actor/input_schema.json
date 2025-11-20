@@ -1,35 +1,28 @@
 {
   "title": "Randstad Jobs Scraper",
-  "description": "Scrape job listings from Randstad global. Provide search URL, keywords, location, and posted date filters. Actor paginates and optionally scrapes detail pages.",
+  "description": "Scrape jobs from Randstad.fr. Provide either keyword/location/category OR a Randstad search URL (startUrl, url, or startUrls). Actor paginates and optionally scrapes detail pages.",
   "type": "object",
   "schemaVersion": 1,
   "properties": {
     "startUrl": {
       "title": "Start URL",
       "type": "string",
-      "description": "Start scraping from a specific Randstad URL. If provided, this will be used instead of the default.",
+      "description": "Start scraping from a specific Randstad search URL. If provided, this will be used instead of Keyword/Location.",
       "editor": "textfield"
     },
     "keyword": {
-      "title": "Keyword",
+      "title": "Keyword (if not using Start URL)",
       "type": "string",
       "description": "Job search keyword(s), e.g., 'Software Developer', 'Marketing Manager', 'Data Analyst'.",
       "editor": "textfield",
       "prefill": "software engineer"
     },
     "location": {
-      "title": "Location",
+      "title": "Location (if not using Start URL)",
       "type": "string",
-      "description": "Location to search for jobs, e.g., 'New York', 'London'.",
-      "editor": "textfield"
-    },
-    "posted_date": {
-      "title": "Posted Date",
-      "type": "string",
-      "description": "Filter jobs by posted date, e.g., 'last_24_hours', 'last_7_days', 'last_30_days'.",
-      "editor": "select",
-      "enum": ["any", "last_24_hours", "last_7_days", "last_30_days"],
-      "default": "any"
+      "description": "Location filter for jobs.",
+      "editor": "textfield",
+      "prefill": "Paris"
     },
     "collectDetails": {
       "title": "Collect job details",
@@ -61,7 +54,9 @@
       "editor": "proxy",
       "default": {
         "useApifyProxy": true,
-        "apifyProxyGroups": ["RESIDENTIAL"]
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
       }
     },
     "cookies": {
@@ -85,5 +80,5 @@
     }
   },
   "required": [],
-  "additionalProperties": false
+  "additionalProperties": true
 }

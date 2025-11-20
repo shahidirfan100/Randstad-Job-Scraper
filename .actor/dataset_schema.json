@@ -8,15 +8,12 @@
         "fields": [
           "title",
           "company",
+          "category",
           "location",
-          "city",
-          "region",
-          "country",
           "salary",
-          "job_type",
-          "job_category",
+          "contract_type",
           "date_posted",
-          "job_url"
+          "url"
         ]
       },
       "display": {
@@ -30,6 +27,10 @@
             "label": "Company",
             "format": "text"
           },
+          "category": {
+            "label": "Category",
+            "format": "text"
+          },
           "location": {
             "label": "Location",
             "format": "text"
@@ -38,15 +39,15 @@
             "label": "Salary",
             "format": "text"
           },
-          "job_type": {
-            "label": "Job Type",
+          "contract_type": {
+            "label": "Contract Type",
             "format": "text"
           },
           "date_posted": {
             "label": "Posted",
             "format": "text"
           },
-          "job_url": {
+          "url": {
             "label": "URL",
             "format": "link"
           }
