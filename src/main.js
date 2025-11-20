@@ -1,31 +1,72 @@
-// src/main.js
+// Randstad.com jobs scraper: Cheerio for LIST pages, Playwright for DETAIL pages
 import { Actor, log } from 'apify';
 import { CheerioCrawler, PlaywrightCrawler, Dataset } from 'crawlee';
 
 const BASE_URL = 'https://www.randstad.com';
 
-const normalizeUrl = (href) => {
+const toAbs = (href, base = BASE_URL) => {
     try {
-        return new URL(href, BASE_URL).href;
+        return new URL(href, base).href;
     } catch {
         return null;
     }
 };
 
 const clean = (text) => {
-    if (!text) return null;
+    if (text == null) return null;
     const t = String(text).replace(/\s+/g, ' ').trim();
     return t || null;
+};
+
+// Decide if a URL path looks like a job DETAIL page.
+// Example detail: /jobs/accounting-analyst_alges_46025627/
+// Example NON-detail: /jobs/s-accounting-auditing/
+const isJobDetailPath = (path) => {
+    try {
+        if (!path) return false;
+        const segments = path.split('/').filter(Boolean);
+        if (segments[0] !== 'jobs') return false;
+
+        const lastSeg = segments[segments.length - 1];
+        // Detail pages always end in something like ..._123456 or ..._town_123456
+        return /.+_\d+$/.test(lastSeg);
+    } catch {
+        return false;
+    }
+};
+
+// Build next pagination URL for randstad.com LIST pages.
+// E.g. /jobs/s-accounting-auditing/ -> /jobs/s-accounting-auditing/page-2/
+//      /jobs/s-accounting-auditing/page-2/ -> /jobs/s-accounting-auditing/page-3/
+const buildNextPageUrl = (urlStr) => {
+    const u = new URL(urlStr);
+    const path = u.pathname;
+    const m = path.match(/\/page-(\d+)\/?$/);
+    let nextPath;
+
+    if (m) {
+        const current = parseInt(m[1], 10) || 1;
+        nextPath = path.replace(/\/page-\d+\/?$/, `/page-${current + 1}/`);
+    } else {
+        const basePath = path.endsWith('/') ? path : `${path}/`;
+        nextPath = `${basePath}page-2/`;
+    }
+
+    u.pathname = nextPath;
+    return u.toString();
 };
 
 Actor.main(async () => {
     const input = (await Actor.getInput()) || {};
 
     const {
-        // Default: global jobs in English
-        startUrl = 'https://www.randstad.com/jobs/l-english/',
+        // Works with any Randstad.com jobs listing, e.g.:
+        //  - https://www.randstad.com/jobs/
+        //  - https://www.randstad.com/jobs/s-accounting-auditing/
+        //  - https://www.randstad.com/jobs/l-english/
+        startUrl = 'https://www.randstad.com/jobs/',
         results_wanted = 50,
-        maxPages = 20,
+        maxPages = 10,
         collectDetails = true,
         proxyConfiguration,
     } = input;
@@ -33,27 +74,27 @@ Actor.main(async () => {
     const target = Number.isFinite(+results_wanted)
         ? Math.max(1, +results_wanted)
         : 50;
+
     const maxPagesNum = Number.isFinite(+maxPages)
         ? Math.max(1, +maxPages)
-        : 20;
+        : 10;
 
     const proxyConf = await Actor.createProxyConfiguration(proxyConfiguration);
 
     const detailUrls = new Set();
-    let listLinksCollected = 0;
     let detailSaved = 0;
 
     log.info(
-        `Randstad.com scraper starting ⇒ startUrl=${startUrl}, target=${target}, maxPages=${maxPagesNum}, collectDetails=${collectDetails}`,
+        `Randstad.com hybrid scraper starting → startUrl=${startUrl}, target=${target}, maxPages=${maxPagesNum}, collectDetails=${collectDetails}`,
     );
 
-    // ---------------------------------------------------------------------
-    // PHASE 1: LIST PAGES (CheerioCrawler)
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    // PHASE 1: LIST PAGES (Cheerio – fast, no JS)
+    // -------------------------------------------------------------------------
     const cheerioCrawler = new CheerioCrawler({
         proxyConfiguration: proxyConf,
         maxConcurrency: 10,
-        requestHandlerTimeoutSecs: 45,
+        requestHandlerTimeoutSecs: 40,
         maxRequestRetries: 2,
 
         async requestHandler({ request, $, enqueueLinks, log: crawlerLog }) {
@@ -64,78 +105,73 @@ Actor.main(async () => {
 
             const url = request.url;
             const u = new URL(url);
-            const pageParam = u.searchParams.get('page');
-            const pageNo = pageParam ? parseInt(pageParam, 10) : 1;
+            const pageMatch = u.pathname.match(/\/page-(\d+)\/?$/);
+            const pageNo = pageMatch ? parseInt(pageMatch[1], 10) || 1 : 1;
 
             const links = new Set();
 
-            // Grab all job-detail-like links: /jobs/<slug>...
-            $('a[href^="/jobs/"]').each((_, el) => {
-                const href = $(el).attr('href');
-                if (!href) return;
+            // Collect ONLY job-detail-like URLs, NOT category/search pages.
+            $('a[href^="/jobs/"], a[href*="://www.randstad.com/jobs/"]').each(
+                (_, el) => {
+                    const href = $(el).attr('href');
+                    if (!href) return;
 
-                // Skip generic nav links like “all jobs”, which are typically /jobs/ only
-                if (href === '/jobs' || href === '/jobs/') return;
+                    const abs = toAbs(href, BASE_URL);
+                    if (!abs) return;
 
-                const abs = normalizeUrl(href);
-                if (!abs) return;
+                    let path;
+                    try {
+                        path = new URL(abs).pathname;
+                    } catch {
+                        return;
+                    }
 
-                // Make sure it's actually under /jobs/
-                if (!abs.includes('/jobs/')) return;
+                    if (!isJobDetailPath(path)) return;
 
-                // Avoid obvious duplicates
-                links.add(abs);
-            });
+                    links.add(abs);
+                },
+            );
 
             crawlerLog.info(
-                `LIST page ${pageNo}: found ${links.size} /jobs/ links (so far detailUrls=${detailUrls.size}, target=${target})`,
+                `LIST page ${pageNo}: found ${links.size} job DETAIL links (collected so far=${detailUrls.size}, target=${target})`,
             );
 
             for (const jobUrl of links) {
                 if (detailUrls.size >= target) break;
-                if (!detailUrls.has(jobUrl)) {
-                    detailUrls.add(jobUrl);
-                    listLinksCollected++;
-                }
+                if (!detailUrls.has(jobUrl)) detailUrls.add(jobUrl);
             }
 
             crawlerLog.info(
-                `Accumulated ${detailUrls.size} unique DETAIL URLs so far.`,
+                `Total unique DETAIL URLs after page ${pageNo}: ${detailUrls.size}`,
             );
 
             if (detailUrls.size >= target) {
                 crawlerLog.info(
-                    `Reached requested number of jobs (${target}), stopping pagination.`,
+                    `Reached requested number of jobs (${target}), stopping LIST pagination.`,
                 );
                 return;
             }
 
             if (pageNo >= maxPagesNum) {
                 crawlerLog.info(
-                    `Reached maxPages=${maxPagesNum}, not enqueueing next LIST page.`,
+                    `Reached maxPages=${maxPagesNum}, not enqueueing more LIST pages.`,
                 );
                 return;
             }
 
-            // --- Pagination strategy for randstad.com ---
-            // URLs look like: /jobs/l-english/ or /jobs/l-english/?page=2
-            const nextUrlObj = new URL(url);
-            const currentPage = pageParam ? parseInt(pageParam, 10) : 1;
-            nextUrlObj.searchParams.set('page', String(currentPage + 1));
-            const nextUrl = nextUrlObj.href;
-
+            const nextUrl = buildNextPageUrl(url);
             crawlerLog.info(`Enqueueing next LIST page: ${nextUrl}`);
             await enqueueLinks({ urls: [nextUrl] });
         },
 
         failedRequestHandler: async ({ request, error }) => {
-            log.error(`LIST request failed ${request.url}: ${error.message}`);
+            log.error(`LIST failed ${request.url}: ${error.message}`);
         },
     });
 
-    // ---------------------------------------------------------------------
-    // PHASE 2: DETAIL PAGES (PlaywrightCrawler)
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    // PHASE 2: DETAIL PAGES (Playwright – rich data, still optimized)
+    // -------------------------------------------------------------------------
     const playwrightCrawler = new PlaywrightCrawler({
         proxyConfiguration: proxyConf,
         maxConcurrency: 8,
@@ -181,7 +217,7 @@ Actor.main(async () => {
 
         preNavigationHooks: [
             async ({ page }, gotoOptions) => {
-                // Block heavy resources to speed up & reduce fingerprinting surface
+                // Block heavy resources for speed & stealth
                 if (!page._randstadRouteSetup) {
                     await page.route('**/*', (route) => {
                         const type = route.request().resourceType();
@@ -195,7 +231,7 @@ Actor.main(async () => {
                             route.continue();
                         }
                     });
-                    // custom flag to avoid re-registering
+                    // custom flag so we don't re-register on every nav
                     page._randstadRouteSetup = true;
                 }
 
@@ -208,7 +244,6 @@ Actor.main(async () => {
 
             crawlerLog.info(`DETAIL page: ${request.url}`);
 
-            // Job pages usually show <h1> quickly; still, don't crash if not
             await page
                 .waitForSelector('h1', { timeout: 10000 })
                 .catch(() => null);
@@ -217,19 +252,20 @@ Actor.main(async () => {
                 const clean = (t) =>
                     (t || '').replace(/\s+/g, ' ').trim() || null;
 
-                // Title
-                const title = clean(
-                    document.querySelector('h1')?.innerText || '',
-                );
+                const result = {};
 
-                // SUMMARY section (location, salary, type)
-                let location = null;
-                let salary = null;
-                let contractType = null;
+                const h1 = document.querySelector('h1');
+                result.title = clean(h1?.innerText);
 
+                // ---- SUMMARY section (location, contract, salary) ----
                 const headings = Array.from(
                     document.querySelectorAll('h2, h3'),
                 );
+
+                let location = null;
+                let contractType = null;
+                let salary = null;
+
                 const summaryHeading = headings.find((h) =>
                     (h.innerText || '')
                         .toLowerCase()
@@ -237,7 +273,6 @@ Actor.main(async () => {
                 );
 
                 if (summaryHeading) {
-                    // Typically the summary bullets are the first <ul> after "summary"
                     let ul = summaryHeading.nextElementSibling;
                     if (!ul || ul.tagName.toLowerCase() !== 'ul') {
                         ul =
@@ -250,44 +285,45 @@ Actor.main(async () => {
                             ul.querySelectorAll('li'),
                         ).map((li) => clean(li.innerText));
 
-                        if (items.length > 0) {
+                        if (items.length) {
+                            // Usually “city, region” is the first bullet
                             location = items[0] || null;
                         }
 
-                        const salaryItem = items.find((t) =>
-                            /€|\$|£|per hour|per month|per year|per annum/i.test(
-                                t || '',
-                            ),
-                        );
-                        if (salaryItem) salary = salaryItem;
-
                         const contractItem = items.find((t) =>
-                            /(temporary|contract|permanent|interim|internship|apprenticeship|student|temp to perm)/i.test(
+                            /(temporary|contract|permanent|interim|internship|temp to perm)/i.test(
                                 t || '',
                             ),
                         );
                         if (contractItem) contractType = contractItem;
+
+                        const salaryItem = items.find((t) =>
+                            /€|\$|£|per hour|per year|per month|per annum/i.test(
+                                t || '',
+                            ),
+                        );
+                        if (salaryItem) salary = salaryItem;
                     }
                 }
 
-                // JOB DETAILS description
+                // ---- JOB DETAILS description ----
                 let descriptionText = null;
 
-                const detailsHeading = headings.find((h) =>
+                const jdHeading = headings.find((h) =>
                     (h.innerText || '')
                         .toLowerCase()
                         .includes('job details'),
                 );
 
-                if (detailsHeading) {
+                if (jdHeading) {
                     const parts = [];
-                    let el = detailsHeading.nextElementSibling;
+                    let el = jdHeading.nextElementSibling;
 
                     while (el && !/^H[23]$/i.test(el.tagName)) {
                         const txt = clean(el.innerText || '');
                         if (
                             txt &&
-                            txt.length > 40 && // avoid tiny crumbs
+                            txt.length > 40 &&
                             !/cookies|privacy|javascript to run this app/i.test(
                                 txt,
                             )
@@ -297,48 +333,40 @@ Actor.main(async () => {
                         el = el.nextElementSibling;
                     }
 
-                    if (parts.length) {
-                        descriptionText = parts.join('\n\n');
-                    }
+                    if (parts.length) descriptionText = parts.join('\n\n');
                 }
 
-                // Date posted, close date from the "posted today / closes ..." area
+                // ---- Posted / closes (keep raw string) ----
+                const bodyText = document.body.innerText || '';
                 let posted = null;
                 let closes = null;
 
-                const mainText = document.body.innerText || '';
-
-                const postedMatch = mainText.match(
-                    /posted\s+([0-9]{1,2}\s+\w+\s+[0-9]{4}|today|yesterday)/i,
-                );
+                const postedMatch = bodyText.match(/posted\s+[^\n]+/i);
                 if (postedMatch) posted = clean(postedMatch[0]);
 
-                const closesMatch = mainText.match(
-                    /closes\s+([0-9]{1,2}\s+\w+\s+[0-9]{4})/i,
-                );
+                const closesMatch = bodyText.match(/closes\s+[^\n]+/i);
                 if (closesMatch) closes = clean(closesMatch[0]);
 
-                return {
-                    title,
-                    location,
-                    salary,
-                    contractType,
-                    descriptionText,
-                    posted,
-                    closes,
-                };
+                result.location = location;
+                result.contractType = contractType;
+                result.salary = salary;
+                result.descriptionText = descriptionText;
+                result.posted = posted;
+                result.closes = closes;
+
+                return result;
             });
 
             const item = {
                 title: clean(data.title),
                 location: clean(data.location),
-                salary: clean(data.salary),
                 contract_type: clean(data.contractType),
+                salary: clean(data.salary),
+                description_text: clean(data.descriptionText),
                 date_info: {
                     posted: clean(data.posted),
                     closes: clean(data.closes),
                 },
-                description_text: clean(data.descriptionText),
                 url: request.url,
                 _source: 'randstad.com',
             };
@@ -359,20 +387,15 @@ Actor.main(async () => {
         },
 
         failedRequestHandler: async ({ request, error }) => {
-            log.error(`DETAIL request failed ${request.url}: ${error.message}`);
+            log.error(`DETAIL failed ${request.url}: ${error.message}`);
         },
     });
 
-    // ---------------------------------------------------------------------
-    // RUN BOTH PHASES
-    // ---------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    // RUN THE HYBRID FLOW
+    // -------------------------------------------------------------------------
     log.info('Phase 1: LIST (CheerioCrawler)');
-    await cheerioCrawler.run([
-        {
-            url: startUrl,
-            userData: { label: 'LIST' },
-        },
-    ]);
+    await cheerioCrawler.run([{ url: startUrl }]);
 
     log.info(
         `LIST phase finished. Collected ${detailUrls.size} DETAIL URLs (requested ${target}).`,
@@ -381,10 +404,7 @@ Actor.main(async () => {
     if (collectDetails && detailUrls.size > 0) {
         log.info('Phase 2: DETAIL (PlaywrightCrawler)');
         await playwrightCrawler.run(
-            Array.from(detailUrls).map((u) => ({
-                url: u,
-                userData: { label: 'DETAIL' },
-            })),
+            Array.from(detailUrls).map((u) => ({ url: u })),
         );
     } else if (collectDetails) {
         log.warning(
