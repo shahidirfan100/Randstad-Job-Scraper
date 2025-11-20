@@ -4,7 +4,7 @@ import { PlaywrightCrawler, CheerioCrawler, Dataset } from 'crawlee';
 
 // ---------- Shared helpers ----------
 
-const toAbs = (href, base = 'https://www.randstad.com') => {
+const toAbs = (href, base = 'https://www.randstad.fr') => {
     try {
         return new URL(href, base).href;
     } catch {
@@ -18,8 +18,8 @@ const cleanText = (text) => {
 };
 
 const buildStartUrl = (kw, loc, cat) => {
-    const u = new URL('https://www.randstad.com/jobs/');
-    if (kw) u.pathname = `q-${kw.replace(/\s+/g, '-')}/`;
+    const u = new URL('https://www.randstad.fr/emploi/');
+    // TODO: later wire keyword / location / category into URL params when you map Randstad search params
     return u.href;
 };
 
@@ -64,24 +64,40 @@ Actor.main(async () => {
 
     function findJobLinksCheerio($, crawlerLog) {
         const links = new Set();
-        const jobLinkRegex = /\/jobs\/[^\/]+_[^\/]+_[^\/]+/i;
 
-        $('h3 a[href*="/jobs/"]').each((_, el) => {
+        // Randstad job detail pages live under /emploi/...
+        $('a[href^="/emploi/"], a[href*="/emploi/"]').each((_, el) => {
             const href = $(el).attr('href');
             if (!href) return;
-            if (!jobLinkRegex.test(href)) return;
+
+            // Skip non-http links
+            if (href.startsWith('mailto:') || href.startsWith('javascript:')) return;
+
             const absoluteUrl = toAbs(href);
-            if (absoluteUrl && absoluteUrl.includes('randstad.com')) {
-                links.add(absoluteUrl);
+            if (!absoluteUrl) return;
+            if (!absoluteUrl.includes('randstad.fr')) return;
+
+            let path;
+            try {
+                path = new URL(absoluteUrl).pathname || '';
+            } catch {
+                return;
             }
+
+            // Skip top-level search / category URLs
+            if (/^\/emploi\/?$/.test(path)) return;
+            if (/^\/emploi\/(cdi|cdd|interim|intérim|stage|freelance|alternance|travail-temporaire)(\/|$)/i.test(path)) return;
+            if (/\/page\//i.test(path)) return;
+
+            links.add(absoluteUrl);
         });
 
-        crawlerLog.info(`Cheerio: found ${links.size} job links on this page`);
+        crawlerLog.info(`Cheerio: found ${links.size} candidate job links on this page`);
         return [...links];
     }
 
     function buildNextPageUrl(currentUrl) {
-        // Randstad.com might use AJAX pagination. For now, try page parameter
+        // Randstad might use different pagination. For now, assume `page` parameter
         const u = new URL(currentUrl);
         const currentPage = parseInt(u.searchParams.get('page') || '1', 10);
         u.searchParams.set('page', String(currentPage + 1));
@@ -91,18 +107,25 @@ Actor.main(async () => {
     // ---------- CheerioCrawler (LIST pages) ----------
 
     const cheerioCrawler = new CheerioCrawler({
+        maxConcurrency: 20,
         proxyConfiguration: proxyConf,
         maxRequestRetries: 2,
-        maxConcurrency: 20, // Cheerio is cheap
-        requestHandlerTimeoutSecs: 30,
-        async requestHandler({ request, $, enqueueLinks, log: crawlerLog }) {
-            const label = request.userData?.label || 'LIST';
-            const pageNo = request.userData?.pageNo || 1;
-            if (label !== 'LIST') return;
+        requestHandlerTimeoutSecs: 45,
+        async requestHandler({ request, $, log: crawlerLog, enqueueLinks }) {
+            if (!$) {
+                crawlerLog.warning(`No Cheerio handle for ${request.url}`);
+                return;
+            }
+
+            const pageNo = parseInt(
+                new URL(request.url).searchParams.get('page') || '1',
+                10,
+            );
 
             const links = findJobLinksCheerio($, crawlerLog);
+
             crawlerLog.info(
-                `LIST page ${pageNo}: ${links.length} job links (saved=${saved}, target=${RESULTS_WANTED}, collectedDetails=${detailUrls.size})`,
+                `LIST page ${pageNo}: ${links.length} job links (saved=${saved}, detailUrls=${detailUrls.size}, target=${RESULTS_WANTED})`,
             );
 
             if (links.length === 0) {
@@ -123,7 +146,7 @@ Actor.main(async () => {
                 const toPush = links.slice(0, Math.max(0, remaining));
                 if (toPush.length) {
                     await Dataset.pushData(
-                        toPush.map((u) => ({ url: u, _source: 'randstad.com' })),
+                        toPush.map((u) => ({ url: u, _source: 'randstad.fr' })),
                     );
                     saved += toPush.length;
                 }
@@ -138,46 +161,51 @@ Actor.main(async () => {
 
             if (pageNo < MAX_PAGES && links.length > 0) {
                 const nextUrl = buildNextPageUrl(request.url);
+                crawlerLog.info(`Enqueuing next LIST page: ${nextUrl}`);
                 await enqueueLinks({
                     urls: [nextUrl],
-                    userData: { label: 'LIST', pageNo: pageNo + 1 },
                 });
+            } else {
+                crawlerLog.info(
+                    `Reached max pages (${MAX_PAGES}) or no links, stopping LIST pagination.`,
+                );
             }
+        },
+        failedRequestHandler: async ({ request, error }) => {
+            log.error(`LIST failed ${request.url}: ${error.message}`);
         },
     });
 
     // ---------- PlaywrightCrawler (DETAIL pages) ----------
 
     const playwrightCrawler = new PlaywrightCrawler({
-        proxyConfiguration: proxyConf,
-        useSessionPool: true,
-        sessionPoolOptions: {
-            maxPoolSize: 30,
-            sessionOptions: {
-                maxUsageCount: 50,
-                maxAgeSecs: 24 * 60 * 60,
-            },
-        },
-        persistCookiesPerSession: true,
-        // Give autoscaler headroom; it will back off if CPU is too high
         maxConcurrency: 25,
-        minConcurrency: 5,
+        proxyConfiguration: proxyConf,
         maxRequestRetries: 2,
-        requestHandlerTimeoutSecs: 30,
-        navigationTimeoutSecs: 15,
+        requestHandlerTimeoutSecs: 60,
         launchContext: {
+            useIncognitoPages: true,
             launchOptions: {
                 headless: true,
                 args: [
                     '--no-sandbox',
-                    '--disable-setuid-sandbox',
                     '--disable-dev-shm-usage',
-                    '--disable-blink-features=AutomationControlled',
-                    '--mute-audio',
+                    '--disable-web-security',
                     '--disable-background-networking',
                     '--disable-background-timer-throttling',
-                    '--disable-backgrounding-occluded-windows',
+                    '--disable-breakpad',
+                    '--disable-client-side-phishing-detection',
+                    '--disable-default-apps',
+                    '--disable-dev-shm-usage',
+                    '--disable-extensions',
+                    '--disable-features=IsolateOrigins,site-per-process',
+                    '--disable-hang-monitor',
+                    '--disable-ipc-flooding-protection',
+                    '--disable-popup-blocking',
+                    '--disable-prompt-on-repost',
+                    '--disable-renderer-backgrounding',
                     '--disable-sync',
+                    '--disable-translate',
                     '--metrics-recording-only',
                     '--no-first-run',
                     '--lang=fr-FR',
@@ -196,15 +224,19 @@ Actor.main(async () => {
         },
         preNavigationHooks: [
             async ({ page }, gotoOptions) => {
-                // Block heavy resources for speed
-                await page.route('**/*', (route) => {
-                    const type = route.request().resourceType();
-                    if (['image', 'stylesheet', 'font', 'media'].includes(type)) {
-                        route.abort();
-                    } else {
-                        route.continue();
-                    }
-                });
+                // Block heavy resources for speed (only register the route handler once per page)
+                if (!page._randstadRoutingSetup) {
+                    await page.route('**/*', (route) => {
+                        const type = route.request().resourceType();
+                        if (['image', 'stylesheet', 'font', 'media'].includes(type)) {
+                            route.abort();
+                        } else {
+                            route.continue();
+                        }
+                    });
+                    // @ts-ignore – custom marker
+                    page._randstadRoutingSetup = true;
+                }
 
                 // We only need the DOM, not full load
                 gotoOptions.waitUntil = 'domcontentloaded';
@@ -230,7 +262,7 @@ Actor.main(async () => {
                 // Expand truncated description if possible
                 try {
                     const toggleBtn = await page.$(
-                        'button[data-truncate-text-target="toggleButton"], button[data-action*="truncate-text#toggle"], button[aria-expanded]',
+                        'button[data-truncate-text-target="toggle"], button[data-action*="truncate-text#toggle"], button[aria-expanded]',
                     );
                     if (toggleBtn) {
                         await toggleBtn.click({ timeout: 1500 }).catch(() => {});
@@ -276,7 +308,7 @@ Actor.main(async () => {
                                 return;
                             }
 
-                            // Disallowed tag: flatten children into parent
+                            // Otherwise, just recurse into children but do not keep this container
                             for (const child of Array.from(sourceNode.childNodes)) {
                                 appendNode(child, targetParent);
                             }
@@ -286,18 +318,6 @@ Actor.main(async () => {
                         return outRoot.innerHTML.trim();
                     }
 
-                    // Remove cookie/consent banners
-                    const bannersToRemove = [
-                        '#cookie-banner',
-                        '[class*="cookie"]',
-                        '[class*="consent"]',
-                        '[id*="cookie"]',
-                        '[id*="consent"]',
-                    ];
-                    bannersToRemove.forEach((sel) => {
-                        document.querySelectorAll(sel).forEach((el) => el.remove());
-                    });
-
                     // Title
                     const h1 = document.querySelector('h1');
                     if (h1) {
@@ -306,63 +326,69 @@ Actor.main(async () => {
                         result.title = null;
                     }
 
-                    // Company - Randstad is the agency
+                    // Company - Randstad is the agency, client might be mentioned
                     result.company = 'Randstad';
 
                     // Location
-                    const locationEl = document.querySelector('[data-cy="job-location"]') || 
-                                     document.querySelector('.location') || 
-                                     document.querySelector('[itemprop="jobLocation"]');
+                    const locationEl = document.querySelector('[data-cy="job-location"], .location, [itemprop="jobLocation"]');
                     if (locationEl) {
                         result.location = locationEl.innerText.trim();
                     } else {
-                        // Try to find in specific divs
-                        const locDiv = Array.from(document.querySelectorAll('div')).find(div => 
-                            div.innerText.includes('location of role') || 
-                            div.innerText.match(/[A-Za-z\s]+,\s*[A-Za-z\s]+/)
-                        );
-                        if (locDiv) {
-                            const match = locDiv.innerText.match(/([A-Za-z\s]+,\s*[A-Za-z\s]+)/);
-                            if (match) result.location = match[1].trim();
-                        }
-                    }
-
-                    // === DESCRIPTION: extract from job details section ===
-
-                    const descElements = [];
-
-                    // Main description content
-                    const descSelectors = [
-                        '[data-cy="job-description"]',
-                        '.job-description',
-                        'article',
-                        '.content',
-                        'div[data-testid="job-description"]'
-                    ];
-
-                    descSelectors.forEach((sel) => {
-                        document.querySelectorAll(sel).forEach((el) => {
-                            descElements.push(el);
-                        });
-                    });
-
-                    // Fallback: look for text blocks
-                    if (!descElements.length) {
-                        const allDivs = document.querySelectorAll('div');
-                        for (const div of allDivs) {
-                            const text = div.innerText.trim();
-                            if (text.length > 100 && !text.includes('location of role') && !text.includes('job type')) {
-                                descElements.push(div);
+                        // Try to infer from common summary / bullet blocks near the top of the page
+                        const summaryBlocks = Array.from(document.querySelectorAll('ul, .summary, .job-summary'));
+                        for (const block of summaryBlocks) {
+                            const txt = (block.innerText || '').trim();
+                            // naive "city, department" style match
+                            const locMatch = txt.match(/([A-Za-zÀ-ÿ\s\-]+,\s*[A-Za-zÀ-ÿ\s\-]+)/);
+                            if (locMatch) {
+                                result.location = locMatch[1].trim();
                                 break;
                             }
                         }
+                    }
+
+                    // === DESCRIPTION: focus on headings specific to Randstad ===
+                    const descElements = [];
+
+                    // Strategy:
+                    // 1. Look for h2/h3 headings like "descriptif du poste", "profil recherché", "à propos de notre client"
+                    // 2. Collect following siblings until the next h2/h3
+                    const headingTags = ['h2', 'h3'];
+                    const sectionTitleMatchers = [
+                        'descriptif du poste',
+                        'profil recherché',
+                        'profil recherché(e)',
+                        'à propos de notre client',
+                        'a propos de notre client',
+                    ];
+
+                    headingTags.forEach((tag) => {
+                        document.querySelectorAll(tag).forEach((h) => {
+                            const text = (h.innerText || '').toLowerCase();
+                            if (sectionTitleMatchers.some((s) => text.includes(s))) {
+                                let node = h.nextElementSibling;
+                                while (node && !/^H[23]$/i.test(node.tagName)) {
+                                    descElements.push(node);
+                                    node = node.nextElementSibling;
+                                }
+                            }
+                        });
+                    });
+
+                    // If nothing found, fall back to a broader container
+                    if (!descElements.length) {
+                        const fallback = document.querySelector(
+                            '[data-cy="job-description"], .descriptif-du-poste, .profil-recherche, .a-propos-de-notre-client, article, .content, .job-description',
+                        );
+                        if (fallback) descElements.push(fallback);
                     }
 
                     let descriptionText = '';
                     let descriptionHtml = '';
 
                     for (const el of descElements) {
-                        const text = el.innerText.trim();
+                        if (!el) continue;
+                        const text = (el.innerText || '').trim();
                         if (
                             text.length > 80 &&
                             !/traceur|cookie|consentement|GDPR/i.test(text)
@@ -381,13 +407,13 @@ Actor.main(async () => {
 
                     const bodyText = document.body.innerText || '';
 
-                    const dateMatch = bodyText.match(/posted (\d{1,2} \w+ \d{4})/i);
+                    const dateMatch = bodyText.match(/publié le (\d{1,2} \w+ \d{4})/i);
                     result.date_posted = dateMatch ? dateMatch[1] : null;
 
-                    const salaryMatch = bodyText.match(/(\d+(?:[.,]\d+)?(?:\s*-\s*\d+(?:[.,]\d+)?)?\s*(?:€|¥|\$|£)\s*(?:per hour|per year|per month))/i);
+                    const salaryMatch = bodyText.match(/(\d+(?:[.,]\d+)?\s*€\s*(?:par heure|par mois|par année))/i);
                     result.salary = salaryMatch ? salaryMatch[1].trim() : null;
 
-                    const contractMatch = bodyText.match(/(temporary|permanent|contract|temp to perm)/i);
+                    const contractMatch = bodyText.match(/(cdi|cdd|intérim|stage|freelance)/i);
                     result.contract_type = contractMatch ? contractMatch[1] : null;
 
                     return result;
@@ -431,18 +457,22 @@ Actor.main(async () => {
     await cheerioCrawler.run(
         initialUrls.map((u) => ({
             url: u,
-            userData: { label: 'LIST', pageNo: 1 },
+            userData: {
+                label: 'LIST',
+            },
         })),
     );
 
-    const detailArray = Array.from(detailUrls);
-    log.info(`LIST phase finished. Detail URLs collected: ${detailArray.length}`);
+    log.info(`LIST phase done. Collected ${detailUrls.size} DETAIL URLs.`);
 
-    if (collectDetails && detailArray.length > 0) {
-        log.info('Phase 2: PlaywrightCrawler (DETAIL pages, high concurrency)');
+    if (collectDetails && detailUrls.size > 0) {
+        log.info('Phase 2: PlaywrightCrawler (DETAIL pages, rich data)');
         await playwrightCrawler.run(
-            detailArray.map((u) => ({
+            Array.from(detailUrls).map((u) => ({
                 url: u,
+                userData: {
+                    label: 'DETAIL',
+                },
             })),
         );
     } else if (collectDetails) {
