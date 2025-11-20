@@ -4,7 +4,7 @@ import { PlaywrightCrawler, CheerioCrawler, Dataset } from 'crawlee';
 
 // ---------- Shared helpers ----------
 
-const toAbs = (href, base = 'https://www.randstad.fr') => {
+const toAbs = (href, base = 'https://www.randstad.com') => {
     try {
         return new URL(href, base).href;
     } catch {
@@ -18,8 +18,8 @@ const cleanText = (text) => {
 };
 
 const buildStartUrl = (kw, loc, cat) => {
-    const u = new URL('https://www.randstad.fr/emploi/');
-    // Randstad search might use different parameters, but for now use basic URL
+    const u = new URL('https://www.randstad.com/jobs/');
+    if (kw) u.pathname = `q-${kw.replace(/\s+/g, '-')}/`;
     return u.href;
 };
 
@@ -64,14 +64,14 @@ Actor.main(async () => {
 
     function findJobLinksCheerio($, crawlerLog) {
         const links = new Set();
-        const jobLinkRegex = /\/emploi\/[^\/]+_[^\/]+_[^\/]+/i;
+        const jobLinkRegex = /\/jobs\/[^\/]+_[^\/]+_[^\/]+/i;
 
-        $('h3 a[href*="/emploi/"]').each((_, el) => {
+        $('h3 a[href*="/jobs/"]').each((_, el) => {
             const href = $(el).attr('href');
             if (!href) return;
             if (!jobLinkRegex.test(href)) return;
             const absoluteUrl = toAbs(href);
-            if (absoluteUrl && absoluteUrl.includes('randstad.fr')) {
+            if (absoluteUrl && absoluteUrl.includes('randstad.com')) {
                 links.add(absoluteUrl);
             }
         });
@@ -81,7 +81,7 @@ Actor.main(async () => {
     }
 
     function buildNextPageUrl(currentUrl) {
-        // Randstad might use different pagination. For now, assume page parameter
+        // Randstad.com might use AJAX pagination. For now, try page parameter
         const u = new URL(currentUrl);
         const currentPage = parseInt(u.searchParams.get('page') || '1', 10);
         u.searchParams.set('page', String(currentPage + 1));
@@ -123,7 +123,7 @@ Actor.main(async () => {
                 const toPush = links.slice(0, Math.max(0, remaining));
                 if (toPush.length) {
                     await Dataset.pushData(
-                        toPush.map((u) => ({ url: u, _source: 'randstad.fr' })),
+                        toPush.map((u) => ({ url: u, _source: 'randstad.com' })),
                     );
                     saved += toPush.length;
                 }
@@ -306,35 +306,38 @@ Actor.main(async () => {
                         result.title = null;
                     }
 
-                    // Company - Randstad is the agency, client might be mentioned
+                    // Company - Randstad is the agency
                     result.company = 'Randstad';
 
                     // Location
-                    const locationEl = document.querySelector('[data-cy="job-location"], .location, [itemprop="jobLocation"]');
+                    const locationEl = document.querySelector('[data-cy="job-location"]') || 
+                                     document.querySelector('.location') || 
+                                     document.querySelector('[itemprop="jobLocation"]');
                     if (locationEl) {
                         result.location = locationEl.innerText.trim();
                     } else {
-                        // Try to find in summary
-                        const summary = document.querySelector('.summary, .job-summary');
-                        if (summary) {
-                            const locMatch = summary.innerText.match(/([A-Za-z\s]+,\s*[A-Za-z\s]+)/);
-                            if (locMatch) result.location = locMatch[1].trim();
+                        // Try to find in specific divs
+                        const locDiv = Array.from(document.querySelectorAll('div')).find(div => 
+                            div.innerText.includes('location of role') || 
+                            div.innerText.match(/[A-Za-z\s]+,\s*[A-Za-z\s]+/)
+                        );
+                        if (locDiv) {
+                            const match = locDiv.innerText.match(/([A-Za-z\s]+,\s*[A-Za-z\s]+)/);
+                            if (match) result.location = match[1].trim();
                         }
                     }
 
-                    // === DESCRIPTION: focus on specific sections for Randstad ===
+                    // === DESCRIPTION: extract from job details section ===
 
                     const descElements = [];
 
-                    // Main description sections
+                    // Main description content
                     const descSelectors = [
                         '[data-cy="job-description"]',
-                        '.descriptif-du-poste',
-                        '.profil-recherche',
-                        '.a-propos-de-notre-client',
-                        'section h3:contains("descriptif") + *',
-                        'section h3:contains("profil") + *',
-                        'section h3:contains("client") + *',
+                        '.job-description',
+                        'article',
+                        '.content',
+                        'div[data-testid="job-description"]'
                     ];
 
                     descSelectors.forEach((sel) => {
@@ -343,17 +346,16 @@ Actor.main(async () => {
                         });
                     });
 
-                    // Fallback if nothing found
+                    // Fallback: look for text blocks
                     if (!descElements.length) {
-                        const fallbackSelectors = [
-                            'article',
-                            '.content',
-                        ];
-                        fallbackSelectors.forEach((sel) => {
-                            document.querySelectorAll(sel).forEach((el) => {
-                                descElements.push(el);
-                            });
-                        });
+                        const allDivs = document.querySelectorAll('div');
+                        for (const div of allDivs) {
+                            const text = div.innerText.trim();
+                            if (text.length > 100 && !text.includes('location of role') && !text.includes('job type')) {
+                                descElements.push(div);
+                                break;
+                            }
+                        }
                     }
 
                     let descriptionText = '';
@@ -379,13 +381,13 @@ Actor.main(async () => {
 
                     const bodyText = document.body.innerText || '';
 
-                    const dateMatch = bodyText.match(/publié le (\d{1,2} \w+ \d{4})/i);
+                    const dateMatch = bodyText.match(/posted (\d{1,2} \w+ \d{4})/i);
                     result.date_posted = dateMatch ? dateMatch[1] : null;
 
-                    const salaryMatch = bodyText.match(/(\d+(?:[.,]\d+)?\s*€\s*(?:par heure|par mois|par année))/i);
+                    const salaryMatch = bodyText.match(/(\d+(?:[.,]\d+)?(?:\s*-\s*\d+(?:[.,]\d+)?)?\s*(?:€|¥|\$|£)\s*(?:per hour|per year|per month))/i);
                     result.salary = salaryMatch ? salaryMatch[1].trim() : null;
 
-                    const contractMatch = bodyText.match(/(cdi|cdd|intérim|stage|freelance)/i);
+                    const contractMatch = bodyText.match(/(temporary|permanent|contract|temp to perm)/i);
                     result.contract_type = contractMatch ? contractMatch[1] : null;
 
                     return result;

@@ -1,10 +1,10 @@
 # Randstad Jobs Scraper
 
-Scrape job listings from Randstad.fr, France's premier staffing and recruitment agency. This Apify actor automatically extracts comprehensive job data including positions, locations, salaries, and descriptions from Randstad's extensive job database.
+Scrape job listings from Randstad.com, the global staffing and recruitment leader. This Apify actor automatically extracts comprehensive job data including positions, locations, salaries, and descriptions from Randstad's extensive international job database.
 
 ## 🌟 What is Randstad?
 
-Randstad is France's leading staffing agency, connecting thousands of job seekers with employers across all industries. With over 400 agencies nationwide, Randstad offers temporary, permanent, and contract positions in sectors like IT, healthcare, manufacturing, logistics, and more.
+Randstad is the global leader in HR services, connecting people and organizations worldwide. With operations in 39 countries and over 4,700 branches, Randstad provides workforce solutions including temporary staffing, permanent placement, and HR consulting across all industries and sectors.
 
 ## 🚀 Key Features
 
@@ -46,7 +46,7 @@ Configure your job search with these parameters:
 #### Advanced Configuration with Proxy
 ```json
 {
-  "startUrls": ["https://www.randstad.fr/emploi/"],
+  "startUrls": ["https://www.randstad.com/jobs/"],
   "collectDetails": true,
   "max_pages": 10,
   "proxyConfiguration": {
@@ -81,7 +81,7 @@ Each job listing is returned as a structured JSON object:
   "date_posted": "20/11/2025",
   "description_html": "<p>Detailed job description with requirements...</p>",
   "description_text": "Plain text version of the complete job description...",
-  "url": "https://www.randstad.fr/emploi/software-engineer-paris_code.html"
+  "url": "https://www.randstad.com/jobs/software-engineer-london_uk_12345.html"
 }
 ```
 
@@ -89,13 +89,13 @@ Each job listing is returned as a structured JSON object:
 
 - **`title`**: Job position title
 - **`company`**: Always "Randstad" (the staffing agency)
-- **`location`**: Job location in France (city, region)
+- **`location`**: Job location worldwide (city, region, country)
 - **`salary`**: Compensation information when available
 - **`contract_type`**: Employment type (CDI, CDD, Intérim, etc.)
 - **`date_posted`**: Publication date of the job posting
 - **`description_html`**: Full job description with HTML formatting
 - **`description_text`**: Plain text version for easy processing
-- **`url`**: Direct link to the job posting on Randstad.fr
+- **`url`**: Direct link to the job posting on Randstad.com
 
 ## 🛠️ Usage Guide
 
@@ -197,7 +197,7 @@ Set up webhooks to automatically receive results when scraping completes:
 ## 📊 Data Quality & Limitations
 
 ### Data Freshness
-- **Real-time Updates**: Scrapes current live data from Randstad.fr
+- **Real-time Updates**: Scrapes current live data from Randstad.com
 - **Update Frequency**: Jobs are updated as they appear on the site
 
 ### Coverage
@@ -206,7 +206,7 @@ Set up webhooks to automatically receive results when scraping completes:
 - **Language**: Primarily French job listings
 
 ### Limitations
-- **Site Dependency**: Relies on Randstad.fr website structure
+- **Site Dependency**: Relies on Randstad.com website structure
 - **Rate Limits**: Subject to website restrictions
 - **Data Availability**: Only includes jobs currently posted on Randstad
 
@@ -230,12 +230,12 @@ Set up webhooks to automatically receive results when scraping completes:
 - **Support**: Contact Apify support for technical issues
 
 ### Related Resources
-- [Randstad France Official Website](https://www.randstad.fr)
+- [Randstad Global Official Website](https://www.randstad.com)
 - [Apify Platform Documentation](https://docs.apify.com)
 - [Apify Community Forum](https://community.apify.com)
 
 ### Version History
-- **v1.0.0**: Initial release with full Randstad.fr scraping capabilities
+- **v1.0.0**: Initial release with full Randstad.com scraping capabilities
 
 ---
 
